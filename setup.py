@@ -19,5 +19,6 @@ setup(
     author_email='kemingz@berkeley.edu',
     packages=PACKAGES,
     package_dir={"": "src"},
+    version='0.0.1',
     install_requires=INSTALL_REQUIRES
 )

@@ -35,8 +35,8 @@ default_flow_config = {
 
 
 class NBI:
-    def __init__(self, featurizer, dim_param, flow_config={}, idx_gpu=0, parallel=False,
-                 simulator=None, directory='', prior=None, n_jobs=1, process=None, modify_scales=None, labels=None):
+    def __init__(self, featurizer, dim_param, physics=None, prior=None, instrumental=None, flow_config={},
+                 idx_gpu=0, parallel=False, directory='', n_jobs=1, modify_scales=None, labels=None):
         self.init_env(idx_gpu)
         self.ndim = dim_param
         config = copy.copy(default_flow_config)
@@ -59,8 +59,8 @@ class NBI:
         self.modify_scales = modify_scales
 
         self.prior = prior
-        self.simulator = simulator
-        self.process = process
+        self.simulator = physics
+        self.process = instrumental
         self.directory = directory
         self.n_jobs=n_jobs
 
