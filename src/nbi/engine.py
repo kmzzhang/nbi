@@ -220,7 +220,7 @@ class NBI:
                 self.optimizer,
                 T_0=self.n_epochs,
                 T_mult=1,
-                eta_min=self.min_lr
+                eta_min=min_lr
             )
         else:
             self.scheduler = MultiStepLR(self.optimizer, np.array(decay_type.split(','), dtype=int), gamma=0.1)
