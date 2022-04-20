@@ -6,11 +6,13 @@ PACKAGES = find_packages(where="src")
 INSTALL_REQUIRES = [
     "torch>=1.4",
     "numpy",
+    "scipy",
     "matplotlib",
     "corner",
     "joblib",
     "pytest",
-    "tqdm"
+    "tqdm",
+    'wandb'
 ]
 
 setup(

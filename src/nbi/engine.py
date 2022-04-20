@@ -1,5 +1,7 @@
+from .model import get_flow, DataParallelFlow
+from .data import BaseContainer
+
 import os
-os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 import corner
 import copy
 import numpy as np
@@ -8,22 +10,19 @@ import wandb
 from multiprocessing import Pool
 from tqdm import tqdm_notebook as tqdm
 
-from .model import get_flow, DataParallelFlow
-from .data import BaseContainer
-
 import torch
 import torch.optim as optim
 import torch.utils.data
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau, MultiStepLR, CosineAnnealingWarmRestarts
 
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
 corner_kwargs = {'quantiles': [0.16, 0.5, 0.84],
-                'show_titles': True,
-                'title_kwargs': {"fontsize": 16},
-                'fill_contours': True,
-                'levels': 1.0 - np.exp(-0.5 * np.arange(0.5, 2.6, 0.5) ** 2)}
-
+                 'show_titles': True,
+                 'title_kwargs': {"fontsize": 16},
+                 'fill_contours': True,
+                 'levels': 1.0 - np.exp(-0.5 * np.arange(0.5, 2.6, 0.5) ** 2)}
 
 default_flow_config = {
     'flow_hidden': 256,
@@ -62,7 +61,7 @@ class NBI:
         self.simulator = physics
         self.process = instrumental
         self.directory = directory
-        self.n_jobs=n_jobs
+        self.n_jobs = n_jobs
 
         try:
             os.mkdir(self.directory)
@@ -209,7 +208,7 @@ class NBI:
         self.training_losses = list()
         self.validation_losses = list()
 
-    def _init_scheduler(self, lr, decay_type='SGDR', patience=5, decay_threshold=0.01):
+    def _init_scheduler(self, min_lr, decay_type='SGDR', patience=5, decay_threshold=0.01):
         self.decay_type = decay_type
         if decay_type == 'plateau':
             self.scheduler = ReduceLROnPlateau(self.optimizer, factor=0.1, patience=patience,
@@ -221,7 +220,7 @@ class NBI:
                 self.optimizer,
                 T_0=self.n_epochs,
                 T_mult=1,
-                eta_min=1e-6
+                eta_min=self.min_lr
             )
         else:
             self.scheduler = MultiStepLR(self.optimizer, np.array(decay_type.split(','), dtype=int), gamma=0.1)
@@ -353,17 +352,19 @@ class NBI:
         self.y_mean = y_list.mean(0, keepdims=True)
         self.y_std = y_list.std(0, keepdims=True)
 
-    def train(self, x, n_rounds, n_per_round, n_epochs, y=None, train_batch=512, val_batch=512,
-              project='test', wandb_enabled=False, f_val=0.2, lr=0.001, x_file=None, y_file=None, decay_type='SGDR'):
+    def train(self, x, n_rounds, n_per_round, n_epochs, y=None, train_batch=512, val_batch=512, project='test',
+              wandb_enabled=False, f_val=0.2, lr=0.001, min_lr=None, x_file=None, y_file=None, decay_type='SGDR'):
 
         self.n_epochs = n_epochs
         self._init_train(lr)
         self._init_wandb(project, wandb_enabled)
         self.x_paths = list()
         self.ys = None
+        if min_lr is None:
+            min_lr = lr * 0.001
 
         for round in range(n_rounds):
-            self._init_scheduler(lr, decay_type=decay_type)
+            self._init_scheduler(min_lr, decay_type=decay_type)
             self.round = round
             print('\nRound: {}'.format(round))
             thetas = self._draw_params(x, n_per_round, y_file if round == 0 else None)
