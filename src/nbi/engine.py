@@ -94,6 +94,10 @@ class NBI:
         except:
             pass
 
+    def train(self, *args, **kwargs):
+        # deprecated
+        return self.run(*args, **kwargs)
+
     def run(
             self,
             x,
@@ -107,6 +111,7 @@ class NBI:
             project='test',
             wandb_enabled=False,
             neff_stop=-1,
+            early_stop_train=True,
             f_val=0,
             lr=0.001,
             min_lr=None,
@@ -116,23 +121,20 @@ class NBI:
     ):
 
         self.n_epochs = n_epochs
+        self.x_file = x_file
+        self.y_file = y_file
         self._init_train(lr)
         self._init_wandb(project, wandb_enabled)
 
         if min_lr is None:
             min_lr = lr * 0.001
 
-        thetas = self._draw_params(x, n_per_round, y_file)
-        x_path = self.simulate(thetas, x_file)
+        thetas, weights = self.sample(x, n_per_round)
+        x_path = self.simulate(thetas)
         np.save(os.path.join(self.directory, '0_x.npy'), x_path)
         np.save(os.path.join(self.directory, '0_y.npy'), thetas)
         self.x_all.append(x_path)
         self.y_all.append(thetas)
-
-        if self.likelihood is not None:
-            weights = self.importance_reweight(x)
-        else:
-            weights = None
         self.weights.append(weights)
 
         for i in range(n_rounds):
@@ -140,7 +142,6 @@ class NBI:
             print('\nRound: {}'.format(i))
 
             x_round, y_round = self.get_round_data(n_reuse)
-
             data_container = BaseContainer(x_round, y_round, f_test=0, f_val=f_val, process=self.process)
             self._init_loader(data_container, train_batch, val_batch)
 
@@ -154,25 +155,25 @@ class NBI:
                 self.epoch = epoch
 
             self.round += 1
-            thetas = self._draw_params(x, n_per_round)
+            thetas, weights = self.sample(x, n_per_round)
             x_path = self.simulate(thetas)
             np.save(os.path.join(self.directory, str(self.round + 1)) + '_x.npy', x_path)
             np.save(os.path.join(self.directory, str(self.round + 1)) + '_y.npy', thetas)
             self.x_all.append(x_path)
             self.y_all.append(thetas)
+            self.weights.append(weights)
 
             if self.likelihood is not None:
-                weights = self.importance_reweight(x)
-            else:
-                weights = None
-            self.weights.append(weights)
+                neff = 1 / (weights ** 2).sum()
+                self.neff.append(neff)
+                print('Effective sample size for round ' + str(self.round) + ': ', '%.1f' % neff)
+                print('Effective sample size for all rounds: ', '%.1f' % np.sum(self.neff))
 
             print('posterior from round ' + str(self.round))
             self.corner(x, thetas, truth=y, weights=weights)
+
             print('posterior from all rounds')
-            all_weights = np.concatenate(np.array(self.weights) * np.array(self.neff)[:, None])
-            all_weights /= all_weights.sum()
-            all_thetas = np.concatenate(self.y_all)
+            all_thetas, all_weights = self.result()
             self.corner(x, all_thetas, truth=y, weights=all_weights)
 
             if y is not None:
@@ -184,10 +185,40 @@ class NBI:
 
             if np.sum(self.neff) > neff_stop and neff_stop > 0:
                 print('early stopping')
-                break
+                return
+            elif True: #self.neff[-1] * 1.1 < self.neff[-2]:
+                n_required = neff_stop - np.sum(self.neff)
+                n_required /= self.neff[-1] / n_per_round
+                n_required = int(n_required)
+                n_required = 5000
+                print('stop training')
+                print('importance sampling N =', n_required)
+                thetas, weights = self.sample(x, n_required)
+                neff = 1 / (weights ** 2).sum()
+
+                self.round += 1
+                x_path = self.simulate(thetas)
+                np.save(os.path.join(self.directory, str(self.round + 1)) + '_x.npy', x_path)
+                np.save(os.path.join(self.directory, str(self.round + 1)) + '_y.npy', thetas)
+                self.x_all.append(x_path)
+                self.y_all.append(thetas)
+                print(self.neff, neff)
+                self.neff.append(neff)
+                print(self.neff, neff)
+                self.weights.append(weights)
+
+                print('Effective sample size is %.1f' % neff)
+
+                return
+
+    def result(self):
+        all_weights = np.concatenate(np.array(self.weights) * np.array(self.neff)[:, None])
+        all_weights /= all_weights.sum()
+        all_thetas = np.concatenate(self.y_all)
+
+        return all_thetas, all_weights
 
     def get_round_data(self, n_reuse):
-
         if n_reuse == -1:
             return np.concatenate(self.x_all), np.concatenate(self.y_all)
         else:
@@ -199,30 +230,30 @@ class NBI:
 
             return x_round, y_round
 
-    def importance_reweight(self, x):
-        plike = self.likelihood(self.y_all[-1])
+    def sample(self, x, n):
+        thetas = self._draw_params(x, n)
+        weights = self.importance_reweight(x, thetas)
+        return thetas, weights
+
+    def importance_reweight(self, x, y):
+        if self.likelihood is None:
+            return None
+        plike = self.likelihood(x, y)
         plike /= plike.sum() / len(plike)
-        prior = self.prior_eval(self.y_all[-1])
+        prior = self.prior_eval(y)
         prior /= prior.sum() / len(plike)
         if self.round == 0:
             qprob = prior
         else:
-            qprob = self.log_prob(x, self.y_all[-1])
+            qprob = self.log_prob(x, y)
             qprob -= qprob.max()
             qprob = np.exp(qprob)
             qprob /= qprob.sum() / len(plike)
-        # print(plike.mean(), prior.mean(), qprob.mean())
-        # print(plike.std(), prior.std(), qprob.std())
         weights = plike * prior / qprob
-        # print(weights.mean())
         weights /= weights.sum()
         if np.isnan(weights).any():
             print('importance sampling failed')
             weights = None
-        neff = 1 / (weights ** 2).sum()
-        self.neff.append(neff)
-        print('Effective sample size for round ' + str(self.round) + ': ', '%.1f'%neff)
-        print('Effective sample size for all rounds: ', '%.1f' %np.sum(self.neff))
         return weights
 
     def init_env(self, idx_gpu):
@@ -275,9 +306,9 @@ class NBI:
             s = self.get_network()(x, n=n, sample=True).cpu().numpy()
         return self.scale_y(s, back=True)[0]
 
-    def simulate(self, thetas, x_files=None):
-        if x_files is not None:
-            paths = np.load(x_files)
+    def simulate(self, thetas):
+        if self.x_file is not None:
+            paths = np.load(self.x_file)
         else:
             path_round = os.path.join(self.directory, str(self.round))
             try:
@@ -406,9 +437,9 @@ class NBI:
         if self.round == 0:
             self._init_scales()
 
-    def _draw_params(self, x, n, y_file=None):
-        if y_file is not None:
-            return np.load(y_file)
+    def _draw_params(self, x, n):
+        if self.y_file is not None:
+            return np.load(self.y_file)
         elif self.round == 0:
             return self.prior(n)
         else:
