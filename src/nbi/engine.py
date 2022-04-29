@@ -51,6 +51,7 @@ class NBI:
             modify_scales=None,
             labels=None
     ):
+
         self.init_env(idx_gpu)
         self.ndim = dim_param
         config = copy.copy(default_flow_config)
@@ -85,7 +86,8 @@ class NBI:
         self.round = 0
         self.x_all = list()
         self.y_all = list()
-
+        self.weights = list()
+        self.neff = list()
 
         try:
             os.mkdir(self.directory)
@@ -98,13 +100,14 @@ class NBI:
             n_rounds,
             n_per_round,
             n_epochs,
-            n_reuse=1,
+            n_reuse=0,
             y=None,
             train_batch=512,
             val_batch=512,
             project='test',
             wandb_enabled=False,
-            f_val=0.2,
+            neff_stop=-1,
+            f_val=0,
             lr=0.001,
             min_lr=None,
             x_file=None,
@@ -126,20 +129,20 @@ class NBI:
         self.x_all.append(x_path)
         self.y_all.append(thetas)
 
-        for round in range(n_rounds):
+        if self.likelihood is not None:
+            weights = self.importance_reweight(x)
+        else:
+            weights = None
+        self.weights.append(weights)
+
+        for i in range(n_rounds):
             self._init_scheduler(min_lr, decay_type=decay_type)
-            self.round = round
-            print('\nRound: {}'.format(round))
+            print('\nRound: {}'.format(i))
 
-            x_round = self.x_all[max(0, round - n_reuse + 1): round + 1]
-            x_round = np.concatenate(x_round)
-
-            y_round = self.y_all[max(0, round - n_reuse + 1): round + 1]
-            y_round = np.concatenate(y_round)
+            x_round, y_round = self.get_round_data(n_reuse)
 
             data_container = BaseContainer(x_round, y_round, f_test=0, f_val=f_val, process=self.process)
             self._init_loader(data_container, train_batch, val_batch)
-
 
             for epoch in range(n_epochs):
                 print('\nEpoch: {}'.format(epoch))
@@ -150,39 +153,77 @@ class NBI:
                     wandb.log({"Train Loss": self.training_losses[-1], "Val Loss": self.validation_losses[-1]})
                 self.epoch = epoch
 
+            self.round += 1
             thetas = self._draw_params(x, n_per_round)
             x_path = self.simulate(thetas)
-            np.save(os.path.join(self.directory, str(round + 1)) + '_x.npy', x_path)
-            np.save(os.path.join(self.directory, str(round + 1)) + '_y.npy', thetas)
+            np.save(os.path.join(self.directory, str(self.round + 1)) + '_x.npy', x_path)
+            np.save(os.path.join(self.directory, str(self.round + 1)) + '_y.npy', thetas)
             self.x_all.append(x_path)
             self.y_all.append(thetas)
 
             if self.likelihood is not None:
-                plike = self.likelihood(thetas)
-                plike /= plike.sum() / n_per_round
-                prior = self.prior_eval(thetas)
-                prior /= prior.sum() / n_per_round
-                qprob = self.log_prob(x, thetas)
-                qprob -= qprob.max()
-                qprob = np.exp(qprob)
-                qprob /= qprob.sum() / n_per_round
-                print(plike.mean(), prior.mean(), qprob.mean())
-                weights = plike * prior / qprob
-                print(weights.mean())
-                weights /= weights.sum()
-                print(weights.mean())
-                print('Effective sample size = ', 1 / (weights ** 2).sum())
+                weights = self.importance_reweight(x)
             else:
                 weights = None
+            self.weights.append(weights)
 
-            self.epoch = 0
+            print('posterior from round ' + str(self.round))
             self.corner(x, thetas, truth=y, weights=weights)
+            print('posterior from all rounds')
+            all_weights = np.concatenate(np.array(self.weights) * np.array(self.neff)[:, None])
+            all_weights /= all_weights.sum()
+            all_thetas = np.concatenate(self.y_all)
+            self.corner(x, all_thetas, truth=y, weights=all_weights)
 
             if y is not None:
                 loglike = self.log_prob(x, y)
                 if self.wandb:
                     wandb.log({"loglike": loglike})
                 print(loglike)
+            self.epoch = 0
+
+            if np.sum(self.neff) > neff_stop and neff_stop > 0:
+                print('early stopping')
+                break
+
+    def get_round_data(self, n_reuse):
+
+        if n_reuse == -1:
+            return np.concatenate(self.x_all), np.concatenate(self.y_all)
+        else:
+            x_round = self.x_all[max(0, self.round - n_reuse): self.round + 1]
+            x_round = np.concatenate(x_round)
+
+            y_round = self.y_all[max(0, self.round - n_reuse): self.round + 1]
+            y_round = np.concatenate(y_round)
+
+            return x_round, y_round
+
+    def importance_reweight(self, x):
+        plike = self.likelihood(self.y_all[-1])
+        plike /= plike.sum() / len(plike)
+        prior = self.prior_eval(self.y_all[-1])
+        prior /= prior.sum() / len(plike)
+        if self.round == 0:
+            qprob = prior
+        else:
+            qprob = self.log_prob(x, self.y_all[-1])
+            qprob -= qprob.max()
+            qprob = np.exp(qprob)
+            qprob /= qprob.sum() / len(plike)
+        # print(plike.mean(), prior.mean(), qprob.mean())
+        # print(plike.std(), prior.std(), qprob.std())
+        weights = plike * prior / qprob
+        # print(weights.mean())
+        weights /= weights.sum()
+        if np.isnan(weights).any():
+            print('importance sampling failed')
+            weights = None
+        neff = 1 / (weights ** 2).sum()
+        self.neff.append(neff)
+        print('Effective sample size for round ' + str(self.round) + ': ', '%.1f'%neff)
+        print('Effective sample size for all rounds: ', '%.1f' %np.sum(self.neff))
+        return weights
 
     def init_env(self, idx_gpu):
         torch.manual_seed(0)
@@ -230,7 +271,6 @@ class NBI:
     def infer(self, x, n=5000):
         x = self.scale_x(x)
         x = torch.from_numpy(x).type(self.dtype)
-        print(x.shape)
         with torch.no_grad():
             s = self.get_network()(x, n=n, sample=True).cpu().numpy()
         return self.scale_y(s, back=True)[0]
