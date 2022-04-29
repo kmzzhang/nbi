@@ -34,16 +34,33 @@ default_flow_config = {
 
 
 class NBI:
-    def __init__(self, featurizer, dim_param, physics=None, prior=None, instrumental=None, flow_config={},
-                 idx_gpu=0, parallel=False, directory='', n_jobs=1, modify_scales=None, labels=None):
+    def __init__(
+            self,
+            featurizer,
+            dim_param,
+            physics=None,
+            prior=None,
+            prior_eval=None,
+            likelihood=None,
+            instrumental=None,
+            flow_config={},
+            idx_gpu=0,
+            parallel=False,
+            directory='',
+            n_jobs=1,
+            modify_scales=None,
+            labels=None
+    ):
         self.init_env(idx_gpu)
         self.ndim = dim_param
         config = copy.copy(default_flow_config)
         config.update(flow_config)
         corner_kwargs.update({'labels':labels})
+
         self.network = get_flow(featurizer, dim_param, **config).type(self.dtype)
         if parallel:
             self.network = DataParallelFlow(self.network)
+
         self.epoch = 0
         self.prev_clip = 50000
         self.tloss = list()
@@ -58,15 +75,97 @@ class NBI:
         self.modify_scales = modify_scales
 
         self.prior = prior
+        self.prior_eval = prior_eval
+        self.likelihood = likelihood
         self.simulator = physics
         self.process = instrumental
         self.directory = directory
         self.n_jobs = n_jobs
 
+        self.round = 0
+        self.x_all = list()
+        self.y_all = list()
+
+
         try:
             os.mkdir(self.directory)
         except:
             pass
+
+    def run(
+            self,
+            x,
+            n_rounds,
+            n_per_round,
+            n_epochs,
+            n_reuse=1,
+            y=None,
+            train_batch=512,
+            val_batch=512,
+            project='test',
+            wandb_enabled=False,
+            f_val=0.2,
+            lr=0.001,
+            min_lr=None,
+            x_file=None,
+            y_file=None,
+            decay_type='SGDR'
+    ):
+
+        self.n_epochs = n_epochs
+        self._init_train(lr)
+        self._init_wandb(project, wandb_enabled)
+
+        if min_lr is None:
+            min_lr = lr * 0.001
+
+        thetas = self._draw_params(x, n_per_round, y_file)
+        x_path = self.simulate(thetas, x_file)
+        np.save(os.path.join(self.directory, '0_x.npy'), x_path)
+        np.save(os.path.join(self.directory, '0_y.npy'), thetas)
+        self.x_all.append(x_path)
+        self.y_all.append(thetas)
+
+        for round in range(n_rounds):
+            self._init_scheduler(min_lr, decay_type=decay_type)
+            self.round = round
+            print('\nRound: {}'.format(round))
+
+            x_round = self.x_all[max(0, round - n_reuse + 1): round + 1]
+            x_round = np.concatenate(x_round)
+
+            y_round = self.y_all[max(0, round - n_reuse + 1): round + 1]
+            y_round = np.concatenate(y_round)
+
+            data_container = BaseContainer(x_round, y_round, f_test=0, f_val=f_val, process=self.process)
+            self._init_loader(data_container, train_batch, val_batch)
+
+
+            for epoch in range(n_epochs):
+                print('\nEpoch: {}'.format(epoch))
+                print(self.optimizer.param_groups[0]['lr'])
+                self._train_step()
+                self._step_scheduler()
+                # self._validate_step()
+                if self.wandb:
+                    wandb.log({"Train Loss": self.training_losses[-1], "Val Loss": self.validation_losses[-1]})
+                self.epoch = epoch
+
+            thetas = self._draw_params(x, n_per_round, y_file if round == 0 else None)
+            x_path = self.simulate(thetas, x_file if round == 0 else None)
+            np.save(os.path.join(self.directory, str(round + 1)) + '_x.npy', x_path)
+            np.save(os.path.join(self.directory, str(round + 1)) + '_y.npy', thetas)
+            self.x_all.append(x_path)
+            self.y_all.append(thetas)
+
+            self.epoch = 0
+            self.corner(x, n=100000, y=y)
+
+            if y is not None:
+                loglike = self.log_prob(x, y)
+                if self.wandb:
+                    wandb.log({"loglike": loglike})
+                print(loglike)
 
     def init_env(self, idx_gpu):
         torch.manual_seed(0)
@@ -242,6 +341,9 @@ class NBI:
         self.train_loader = DataLoader(train_container, batch_size=train_batch, shuffle=True, **kwargs)
         self.valid_loader = DataLoader(val_container, batch_size=val_batch, **kwargs)
 
+        if self.round == 0:
+            self._init_scales()
+
     def _draw_params(self, x, n, y_file=None):
         if y_file is not None:
             return np.load(y_file)
@@ -352,60 +454,19 @@ class NBI:
         self.y_mean = y_list.mean(0, keepdims=True)
         self.y_std = y_list.std(0, keepdims=True)
 
-    def train(self, x, n_rounds, n_per_round, n_epochs, y=None, train_batch=512, val_batch=512, project='test',
-              wandb_enabled=False, f_val=0.2, lr=0.001, min_lr=None, x_file=None, y_file=None, decay_type='SGDR'):
-
-        self.n_epochs = n_epochs
-        self._init_train(lr)
-        self._init_wandb(project, wandb_enabled)
-        self.x_paths = list()
-        self.ys = None
-        if min_lr is None:
-            min_lr = lr * 0.001
-
-        for round in range(n_rounds):
-            self._init_scheduler(min_lr, decay_type=decay_type)
-            self.round = round
-            print('\nRound: {}'.format(round))
-            thetas = self._draw_params(x, n_per_round, y_file if round == 0 else None)
-            x_path = self.simulate(thetas, x_file if round == 0 else None)
-            np.save(os.path.join(self.directory, str(round)) + '_x.npy', x_path)
-            np.save(os.path.join(self.directory, str(round)) + '_y.npy', thetas)
-            self.x_paths.extend(x_path)
-            # if self.ys is None:
-            #     self.ys = thetas
-            # else:
-            #     self.ys = np.concatenate([self.ys, thetas], axis=0)
-            data_container = BaseContainer(x_path, thetas, f_test=0, f_val=f_val, process=self.process)
-            self._init_loader(data_container, train_batch, val_batch)
-            if round == 0:
-                self._init_scales()
-            for epoch in range(n_epochs):
-                print('\nEpoch: {}'.format(epoch))
-                self._train_step()
-                self._step_scheduler()
-                # self._validate_step()
-                if self.wandb:
-                    wandb.log({"Train Loss": self.training_losses[-1], "Val Loss": self.validation_losses[-1]})
-                self.epoch = epoch
-            self.epoch=0
-            self.corner(x, n=100000, y=y)
-            loglike = self.log_prob(x, y)
-            if self.wandb:
-                wandb.log({"loglike": loglike})
-            print(loglike)
-
     def log_prob(self, x, y):
         if len(x.shape) == 1:
             x = x[None, None, :]
-        else:
+        elif len(x.shape) == 2:
             x = x[None, :]
+        if len(y.shape) == 1:
+            y = y[None, :]
         x = self.scale_x(x)
-        y = self.scale_y(y[None, :])
+        y = self.scale_y(y)
         x = torch.from_numpy(x).type(self.dtype)
         y = torch.from_numpy(y).type(self.dtype)
         with torch.no_grad():
-            log_prob = self.network(x, y).cpu().numpy()[0] * -1
+            log_prob = self.network(x, y).cpu().numpy()[:,0] * -1
         return log_prob
 
     def corner(self, x, n, color='k', y=None, plot_datapoints=False, plot_density=False, range_=0.95, truth_color='r', seed=0):
