@@ -143,7 +143,6 @@ class NBI:
 
             for epoch in range(n_epochs):
                 print('\nEpoch: {}'.format(epoch))
-                print(self.optimizer.param_groups[0]['lr'])
                 self._train_step()
                 self._step_scheduler()
                 # self._validate_step()
@@ -159,11 +158,19 @@ class NBI:
             self.y_all.append(thetas)
 
             if self.likelihood is not None:
-                plike = self.likelihood(x, thetas)
+                plike = self.likelihood(thetas)
+                plike /= plike.sum() / n_per_round
                 prior = self.prior_eval(thetas)
+                prior /= prior.sum() / n_per_round
                 qprob = self.log_prob(x, thetas)
+                qprob -= qprob.max()
+                qprob = np.exp(qprob)
+                qprob /= qprob.sum() / n_per_round
+                print(plike.mean(), prior.mean(), qprob.mean())
                 weights = plike * prior / qprob
+                print(weights.mean())
                 weights /= weights.sum()
+                print(weights.mean())
                 print('Effective sample size = ', 1 / (weights ** 2).sum())
             else:
                 weights = None
@@ -405,7 +412,7 @@ class NBI:
             weights=None,
             color='k',
             truth=None,
-            plot_datapoints=False,
+            plot_datapoints=True,
             plot_density=False,
             range_=0.95,
             truth_color='r'
@@ -418,7 +425,7 @@ class NBI:
                        truths=truth,
                        color=color,
                        plot_datapoints=plot_datapoints,
-                       range=range_,
+                       # range=range_,
                        plot_density=plot_density,
                        truth_color=truth_color,
                        weights=weights,
