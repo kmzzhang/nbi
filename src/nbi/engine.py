@@ -151,15 +151,25 @@ class NBI:
                     wandb.log({"Train Loss": self.training_losses[-1], "Val Loss": self.validation_losses[-1]})
                 self.epoch = epoch
 
-            thetas = self._draw_params(x, n_per_round, y_file if round == 0 else None)
-            x_path = self.simulate(thetas, x_file if round == 0 else None)
+            thetas = self._draw_params(x, n_per_round)
+            x_path = self.simulate(thetas)
             np.save(os.path.join(self.directory, str(round + 1)) + '_x.npy', x_path)
             np.save(os.path.join(self.directory, str(round + 1)) + '_y.npy', thetas)
             self.x_all.append(x_path)
             self.y_all.append(thetas)
 
+            if self.likelihood is not None:
+                plike = self.likelihood(x, thetas)
+                prior = self.prior_eval(thetas)
+                qprob = self.log_prob(x, thetas)
+                weights = plike * prior / qprob
+                weights /= weights.sum()
+                print('Effective sample size = ', 1 / (weights ** 2).sum())
+            else:
+                weights = None
+
             self.epoch = 0
-            self.corner(x, n=100000, y=y)
+            self.corner(x, thetas, truth=y, weights=weights)
 
             if y is not None:
                 loglike = self.log_prob(x, y)
@@ -198,17 +208,22 @@ class NBI:
         if back:
             return y * self.y_std + self.y_mean
         else:
+            if len(y.shape) != 2:
+                y = np.expand_dims(y, axis=list(range(2 - len(y.shape))))
             return (y - self.y_mean) / self.y_std
 
     def scale_x(self, x, back=False):
         if back:
             return x * self.x_std + self.x_mean
         else:
+            if len(x.shape) != 3:
+                x = np.expand_dims(x, axis=list(range(3 - len(x.shape))))
             return (x - self.x_mean) / self.x_std
 
     def infer(self, x, n=5000):
         x = self.scale_x(x)
         x = torch.from_numpy(x).type(self.dtype)
+        print(x.shape)
         with torch.no_grad():
             s = self.get_network()(x, n=n, sample=True).cpu().numpy()
         return self.scale_y(s, back=True)[0]
@@ -350,87 +365,7 @@ class NBI:
         elif self.round == 0:
             return self.prior(n)
         else:
-            if len(x.shape) == 1:
-                return self.infer(x[None, None, :], n)
-            else:
-                return self.infer(x[None, :], n)
-    """
-    def apt_loss(self, x, y):
-       
-        Code taken from sbi: https://github.com/mackelab/sbi
-        Return log probability of the proposal posterior for atomic proposals.
-        We have two main options when evaluating the proposal posterior.
-            (1) Generate atoms from the proposal prior.
-            (2) Generate atoms from a more targeted distribution, such as the most
-                recent posterior.
-        If we choose the latter, it is likely beneficial not to do this in the first
-        round, since we would be sampling from a randomly-initialized neural density
-        estimator.
-        Args:
-            theta: Batch of parameters θ.  (N, D)
-            x: Batch of data.              (N, 1, 7200)
-            masks: Mask that is True for prior samples in the batch in order to train
-                them with prior loss.
-        Returns:
-            Log-probability of the proposal posterior.
-        
-
-        batch_size = theta.shape[0]
-
-        # Each set of parameter atoms is evaluated using the same x,
-        # so we repeat rows of the data x, e.g. [1, 2] -> [1, 1, 2, 2]
-        repeated_x = repeat_rows(x, num_atoms)
-
-        # To generate the full set of atoms for a given item in the batch,
-        # we sample without replacement num_atoms - 1 times from the rest
-        # of the theta in the batch.
-        probs = ones(batch_size, batch_size) * (1 - eye(batch_size)) / (batch_size - 1)
-
-        choices = torch.multinomial(probs, num_samples=num_atoms - 1, replacement=False)
-        contrasting_theta = theta[choices]
-
-        # We can now create our sets of atoms from the contrasting parameter sets
-        # we have generated.
-        atomic_theta = torch.cat((theta[:, None, :], contrasting_theta), dim=1).reshape(
-            batch_size * num_atoms, -1
-        )
-
-        # Evaluate large batch giving (batch_size * num_atoms) log prob posterior evals.
-        log_prob_posterior = self.network(repeated_x, atomic_theta) * -1
-        # _assert_all_finite(log_prob_posterior, "posterior eval")
-        log_prob_posterior = log_prob_posterior.reshape(batch_size, num_atoms)
-        # print(nde.transform_pm(atomic_theta))
-        # print(log_prob_posterior)
-
-        # Get (batch_size * num_atoms) log prob prior evals.
-        log_prob_prior = ln_prior(atomic_theta)
-        log_prob_prior = log_prob_prior.reshape(batch_size, num_atoms)
-        # _assert_all_finite(log_prob_prior, "prior eval")
-
-        # Compute unnormalized proposal posterior.
-        # print(log_prob_posterior, torch.from_numpy(log_prob_prior))
-        unnormalized_log_prob = log_prob_posterior - torch.from_numpy(log_prob_prior).type(dfloat)
-        # unnormalized_log_prob = log_prob_posterior
-        # print('log_prob: [true theta, contrasting atoms ...]')
-        # print(log_prob_posterior.mean())
-
-        # Normalize proposal posterior across discrete set of atoms.
-        log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
-            unnormalized_log_prob, dim=-1
-        )
-        # print(log_prob_proposal_posterior[0])
-        # _assert_all_finite(log_prob_proposal_posterior, "proposal posterior eval")
-
-        # XXX This evaluates the posterior on _all_ prior samples
-        # if _use_combined_loss:
-        #     log_prob_posterior_non_atomic = _posterior.net.log_prob(theta, x)
-        #     masks = masks.reshape(-1)
-        #     log_prob_proposal_posterior = (
-        #             masks * log_prob_posterior_non_atomic + log_prob_proposal_posterior
-        #     )
-
-        return log_prob_proposal_posterior * -1, unnormalized_log_prob[:, 0]
-    """
+            return self.infer(x, n)
 
     def _init_scales(self):
         x_list = list()
@@ -455,12 +390,6 @@ class NBI:
         self.y_std = y_list.std(0, keepdims=True)
 
     def log_prob(self, x, y):
-        if len(x.shape) == 1:
-            x = x[None, None, :]
-        elif len(x.shape) == 2:
-            x = x[None, :]
-        if len(y.shape) == 1:
-            y = y[None, :]
         x = self.scale_x(x)
         y = self.scale_y(y)
         x = torch.from_numpy(x).type(self.dtype)
@@ -469,19 +398,29 @@ class NBI:
             log_prob = self.network(x, y).cpu().numpy()[:,0] * -1
         return log_prob
 
-    def corner(self, x, n, color='k', y=None, plot_datapoints=False, plot_density=False, range_=0.95, truth_color='r', seed=0):
+    def corner(
+            self,
+            x,
+            y=None,
+            weights=None,
+            color='k',
+            truth=None,
+            plot_datapoints=False,
+            plot_density=False,
+            range_=0.95,
+            truth_color='r'
+    ):
+
         range_ = [range_] * self.ndim
-        if len(x.shape) == 1:
-            x = x[None, None, :]
-        else:
-            x = x[None, :]
-        sample = self.infer(x)
-        figure = corner.corner(sample,
-                               truths=y,
-                               color=color,
-                               plot_datapoints=plot_datapoints,
-                               range=range_,
-                               plot_density=plot_density,
-                               truth_color=truth_color,
-                               **corner_kwargs)
+        if y is None:
+            y = self.infer(x)
+        corner.corner(y,
+                       truths=truth,
+                       color=color,
+                       plot_datapoints=plot_datapoints,
+                       range=range_,
+                       plot_density=plot_density,
+                       truth_color=truth_color,
+                       weights=weights,
+                       **corner_kwargs)
         plt.show()
