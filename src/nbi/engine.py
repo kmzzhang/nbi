@@ -34,14 +34,17 @@ default_flow_config = {
 
 
 class NBI:
+    """ Neural bayesian inference engine for astronomical data
+    """
+
     def __init__(
             self,
             featurizer,
             dim_param,
             physics=None,
             prior=None,
-            prior_eval=None,
-            likelihood=None,
+            log_prior=None,
+            log_like=None,
             instrumental=None,
             flow_config={},
             idx_gpu=0,
@@ -51,6 +54,26 @@ class NBI:
             modify_scales=None,
             labels=None
     ):
+        """
+
+        Parameters
+        ----------
+        featurizer (nn.Module): pytorch network which maps input sequence of shape [Batch, Channel, Length] to
+                output feature vector of shape [Batch, Dimension]. See NBI.get_featurizer() for pre-defined ones.
+        dim_param (int): number of inferred parameters
+        physics (callable): a function which takes (thetas, files)
+        prior
+        log_prior
+        log_like
+        instrumental
+        flow_config
+        idx_gpu
+        parallel
+        directory
+        n_jobs
+        modify_scales
+        labels
+        """
 
         self.init_env(idx_gpu)
         self.ndim = dim_param
@@ -76,8 +99,8 @@ class NBI:
         self.modify_scales = modify_scales
 
         self.prior = prior
-        self.prior_eval = prior_eval
-        self.likelihood = likelihood
+        self.log_prior = log_prior
+        self.log_like = log_like
         self.simulator = physics
         self.process = instrumental
         self.directory = directory
@@ -100,12 +123,12 @@ class NBI:
 
     def run(
             self,
-            x,
+            obs,
             n_rounds,
             n_per_round,
             n_epochs,
             n_reuse=0,
-            y=None,
+            y_true=None,
             train_batch=512,
             val_batch=512,
             project='test',
@@ -129,12 +152,13 @@ class NBI:
         if min_lr is None:
             min_lr = lr * 0.001
 
-        thetas, weights = self.sample(x, n_per_round)
-        x_path = self.simulate(thetas)
+        ys = self.sample(obs, n_per_round)
+        x_path = self.simulate(ys)
+        weights = self.importance_reweight(obs, ys, x_path)
         np.save(os.path.join(self.directory, '0_x.npy'), x_path)
-        np.save(os.path.join(self.directory, '0_y.npy'), thetas)
+        np.save(os.path.join(self.directory, '0_y.npy'), ys)
         self.x_all.append(x_path)
-        self.y_all.append(thetas)
+        self.y_all.append(ys)
         self.weights.append(weights)
 
         for i in range(n_rounds):
@@ -155,29 +179,30 @@ class NBI:
                 self.epoch = epoch
 
             self.round += 1
-            thetas, weights = self.sample(x, n_per_round)
-            x_path = self.simulate(thetas)
+            ys = self.sample(obs, n_per_round)
+            x_path = self.simulate(ys)
+            weights = self.importance_reweight(obs, ys, x_path)
             np.save(os.path.join(self.directory, str(self.round + 1)) + '_x.npy', x_path)
-            np.save(os.path.join(self.directory, str(self.round + 1)) + '_y.npy', thetas)
+            np.save(os.path.join(self.directory, str(self.round + 1)) + '_y.npy', ys)
             self.x_all.append(x_path)
-            self.y_all.append(thetas)
+            self.y_all.append(ys)
             self.weights.append(weights)
 
-            if self.likelihood is not None:
+            if self.log_like is not None:
                 neff = 1 / (weights ** 2).sum()
                 self.neff.append(neff)
                 print('Effective sample size for round ' + str(self.round) + ': ', '%.1f' % neff)
                 print('Effective sample size for all rounds: ', '%.1f' % np.sum(self.neff))
 
             print('posterior from round ' + str(self.round))
-            self.corner(x, thetas, truth=y, weights=weights)
+            self.corner(obs, ys, truth=y_true, weights=weights)
 
             print('posterior from all rounds')
             all_thetas, all_weights = self.result()
-            self.corner(x, all_thetas, truth=y, weights=all_weights)
+            self.corner(obs, all_thetas, truth=y_true, weights=all_weights)
 
-            if y is not None:
-                loglike = self.log_prob(x, y)
+            if y_true is not None:
+                loglike = self.log_prob(obs, y_true)
                 if self.wandb:
                     wandb.log({"loglike": loglike})
                 print(loglike)
@@ -186,29 +211,24 @@ class NBI:
             if np.sum(self.neff) > neff_stop and neff_stop > 0:
                 print('early stopping')
                 return
-            elif True: #self.neff[-1] * 1.1 < self.neff[-2]:
+            elif early_stop_train and self.neff[-1] * 1.1 < self.neff[-2]:
                 n_required = neff_stop - np.sum(self.neff)
                 n_required /= self.neff[-1] / n_per_round
                 n_required = int(n_required)
-                n_required = 5000
                 print('stop training')
                 print('importance sampling N =', n_required)
-                thetas, weights = self.sample(x, n_required)
+                ys, weights = self.sample(obs, n_required)
                 neff = 1 / (weights ** 2).sum()
 
                 self.round += 1
-                x_path = self.simulate(thetas)
+                x_path = self.simulate(ys)
                 np.save(os.path.join(self.directory, str(self.round + 1)) + '_x.npy', x_path)
-                np.save(os.path.join(self.directory, str(self.round + 1)) + '_y.npy', thetas)
+                np.save(os.path.join(self.directory, str(self.round + 1)) + '_y.npy', ys)
                 self.x_all.append(x_path)
-                self.y_all.append(thetas)
-                print(self.neff, neff)
+                self.y_all.append(ys)
                 self.neff.append(neff)
-                print(self.neff, neff)
                 self.weights.append(weights)
-
                 print('Effective sample size is %.1f' % neff)
-
                 return
 
     def result(self):
@@ -232,28 +252,24 @@ class NBI:
 
     def sample(self, x, n):
         thetas = self._draw_params(x, n)
-        weights = self.importance_reweight(x, thetas)
-        return thetas, weights
+        return thetas
 
-    def importance_reweight(self, x, y):
-        if self.likelihood is None:
+    def importance_reweight(self, x, y, x_path):
+        if self.log_like is None:
             return None
-        plike = self.likelihood(x, y)
-        plike /= plike.sum() / len(plike)
-        prior = self.prior_eval(y)
-        prior /= prior.sum() / len(plike)
-        if self.round == 0:
-            qprob = prior
-        else:
-            qprob = self.log_prob(x, y)
-            qprob -= qprob.max()
-            qprob = np.exp(qprob)
-            qprob /= qprob.sum() / len(plike)
-        weights = plike * prior / qprob
-        weights /= weights.sum()
-        if np.isnan(weights).any():
-            print('importance sampling failed')
-            weights = None
+        try:
+            loglike = self.log_like(x, y, x_path)
+        except:
+            loglike = self.log_like(x, y)
+
+        logprior = self.log_prior(y)
+        logproposal = self.log_prob(x, y)
+
+        log_weights = loglike + logprior - logproposal
+        log_weights -= log_weights[~np.isnan(weights)].sum()
+        log_weights[np.isnan(weights)] = 0
+        weights = np.exp(log_weights)
+
         return weights
 
     def init_env(self, idx_gpu):
@@ -468,6 +484,8 @@ class NBI:
         self.y_std = y_list.std(0, keepdims=True)
 
     def log_prob(self, x, y):
+        if self.round == 0:
+            return self.log_prior(y)
         x = self.scale_x(x)
         y = self.scale_y(y)
         x = torch.from_numpy(x).type(self.dtype)
