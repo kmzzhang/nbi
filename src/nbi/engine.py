@@ -42,7 +42,7 @@ class NBI:
             featurizer,
             dim_param,
             physics=None,
-            prior=None,
+            prior_sampler=None,
             log_prior=None,
             log_like=None,
             instrumental=None,
@@ -62,7 +62,7 @@ class NBI:
                 output feature vector of shape [Batch, Dimension]. See NBI.get_featurizer() for pre-defined ones.
         dim_param (int): number of inferred parameters
         physics (callable): a function which takes (thetas, files)
-        prior
+        prior_sampler
         log_prior
         log_like
         instrumental
@@ -98,7 +98,7 @@ class NBI:
 
         self.modify_scales = modify_scales
 
-        self.prior = prior
+        self.prior = prior_sampler
         self.log_prior = log_prior
         self.log_like = log_like
         self.simulator = physics
@@ -154,12 +154,19 @@ class NBI:
 
         ys = self.sample(obs, n_per_round)
         x_path = self.simulate(ys)
-        weights = self.importance_reweight(obs, ys, x_path)
+
         np.save(os.path.join(self.directory, '0_x.npy'), x_path)
         np.save(os.path.join(self.directory, '0_y.npy'), ys)
+
+        weights = self.importance_reweight(obs, ys, x_path)
+
         self.x_all.append(x_path)
         self.y_all.append(ys)
         self.weights.append(weights)
+
+        if self.log_like is not None:
+            neff = 1 / (weights ** 2).sum()
+            self.neff.append(neff)
 
         for i in range(n_rounds):
             self._init_scheduler(min_lr, decay_type=decay_type)
@@ -211,25 +218,26 @@ class NBI:
             if np.sum(self.neff) > neff_stop and neff_stop > 0:
                 print('early stopping')
                 return
-            elif early_stop_train and self.neff[-1] * 1.1 < self.neff[-2]:
-                n_required = neff_stop - np.sum(self.neff)
-                n_required /= self.neff[-1] / n_per_round
-                n_required = int(n_required)
-                print('stop training')
-                print('importance sampling N =', n_required)
-                ys, weights = self.sample(obs, n_required)
-                neff = 1 / (weights ** 2).sum()
+            if early_stop_train and self.round > 1:
+                if self.neff[-1] * 1.1 < self.neff[-2]:
+                    n_required = neff_stop - np.sum(self.neff)
+                    n_required /= self.neff[-1] / n_per_round
+                    n_required = int(n_required)
+                    print('stop training')
+                    print('importance sampling N =', n_required)
+                    ys, weights = self.sample(obs, n_required)
+                    neff = 1 / (weights ** 2).sum()
 
-                self.round += 1
-                x_path = self.simulate(ys)
-                np.save(os.path.join(self.directory, str(self.round + 1)) + '_x.npy', x_path)
-                np.save(os.path.join(self.directory, str(self.round + 1)) + '_y.npy', ys)
-                self.x_all.append(x_path)
-                self.y_all.append(ys)
-                self.neff.append(neff)
-                self.weights.append(weights)
-                print('Effective sample size is %.1f' % neff)
-                return
+                    self.round += 1
+                    x_path = self.simulate(ys)
+                    np.save(os.path.join(self.directory, str(self.round + 1)) + '_x.npy', x_path)
+                    np.save(os.path.join(self.directory, str(self.round + 1)) + '_y.npy', ys)
+                    self.x_all.append(x_path)
+                    self.y_all.append(ys)
+                    self.neff.append(neff)
+                    self.weights.append(weights)
+                    print('Effective sample size is %.1f' % neff)
+                    return
 
     def result(self):
         all_weights = np.concatenate(np.array(self.weights) * np.array(self.neff)[:, None])
@@ -266,9 +274,12 @@ class NBI:
         logproposal = self.log_prob(x, y)
 
         log_weights = loglike + logprior - logproposal
-        log_weights -= log_weights[~np.isnan(weights)].sum()
-        log_weights[np.isnan(weights)] = 0
+        bad = np.isnan(log_weights) + np.isinf(log_weights)
+        log_weights -= log_weights[~bad].max()
+
         weights = np.exp(log_weights)
+        weights[bad] = 0
+        weights /= weights.sum()
 
         return weights
 
