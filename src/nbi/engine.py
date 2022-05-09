@@ -152,11 +152,14 @@ class NBI:
         if min_lr is None:
             min_lr = lr * 0.001
 
-        ys = self.sample(obs, n_per_round)
-        x_path = self.simulate(ys)
-
-        np.save(os.path.join(self.directory, '0_x.npy'), x_path)
+        ys = self._draw_params(obs, n_per_round)
         np.save(os.path.join(self.directory, '0_y.npy'), ys)
+
+        print('sample from prior ' + str(self.round))
+        self.corner(obs, ys, truth=y_true)
+
+        x_path = self.simulate(ys)
+        np.save(os.path.join(self.directory, '0_x.npy'), x_path)
 
         weights = self.importance_reweight(obs, ys, x_path)
 
@@ -167,6 +170,8 @@ class NBI:
         if self.log_like is not None:
             neff = 1 / (weights ** 2).sum()
             self.neff.append(neff)
+            print('Effective sample size for round ' + str(self.round) + ': ', '%.1f' % neff)
+            print('Effective sample size for all rounds: ', '%.1f' % np.sum(self.neff))
 
         for i in range(n_rounds):
             self._init_scheduler(min_lr, decay_type=decay_type)
@@ -186,11 +191,17 @@ class NBI:
                 self.epoch = epoch
 
             self.round += 1
-            ys = self.sample(obs, n_per_round)
-            x_path = self.simulate(ys)
-            weights = self.importance_reweight(obs, ys, x_path)
-            np.save(os.path.join(self.directory, str(self.round + 1)) + '_x.npy', x_path)
+            ys = self._draw_params(obs, n_per_round)
             np.save(os.path.join(self.directory, str(self.round + 1)) + '_y.npy', ys)
+
+            print('sample from round ' + str(self.round))
+            self.corner(obs, ys, truth=y_true)
+
+            x_path = self.simulate(ys)
+            np.save(os.path.join(self.directory, str(self.round + 1)) + '_x.npy', x_path)
+
+            weights = self.importance_reweight(obs, ys, x_path)
+
             self.x_all.append(x_path)
             self.y_all.append(ys)
             self.weights.append(weights)
@@ -225,7 +236,7 @@ class NBI:
                     n_required = int(n_required)
                     print('stop training')
                     print('importance sampling N =', n_required)
-                    ys, weights = self.sample(obs, n_required)
+                    ys, weights = self._draw_params(obs, n_required)
                     neff = 1 / (weights ** 2).sum()
 
                     self.round += 1
@@ -258,11 +269,8 @@ class NBI:
 
             return x_round, y_round
 
-    def sample(self, x, n):
-        thetas = self._draw_params(x, n)
-        return thetas
-
     def importance_reweight(self, x, y, x_path):
+        print(x.shape, y.shape, x_path.shape)
         if self.log_like is None:
             return None
         try:
@@ -334,7 +342,7 @@ class NBI:
         return self.scale_y(s, back=True)[0]
 
     def simulate(self, thetas):
-        if self.x_file is not None:
+        if self.x_file is not None and self.round == 0:
             paths = np.load(self.x_file)
         else:
             path_round = os.path.join(self.directory, str(self.round))
@@ -465,12 +473,17 @@ class NBI:
             self._init_scales()
 
     def _draw_params(self, x, n):
-        if self.y_file is not None:
+        if self.y_file is not None and self.round == 0:
             return np.load(self.y_file)
         elif self.round == 0:
             return self.prior(n)
         else:
-            return self.infer(x, n)
+            params = self.infer(x, n)
+            # logprior = self.log_prior(params)
+            # if np.isinf(logprior).any():
+                # f_reject = np.isinf(logprior).sum() / n
+                # more_params = self.infer(x, int(n * f_reject / (1 - f_reject)))
+            return params
 
     def _init_scales(self):
         x_list = list()
