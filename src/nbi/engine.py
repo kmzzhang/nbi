@@ -155,9 +155,6 @@ class NBI:
         ys = self._draw_params(obs, n_per_round)
         np.save(os.path.join(self.directory, '0_y.npy'), ys)
 
-        print('sample from prior ' + str(self.round))
-        self.corner(obs, ys, truth=y_true)
-
         x_path = self.simulate(ys)
         np.save(os.path.join(self.directory, '0_x.npy'), x_path)
 
