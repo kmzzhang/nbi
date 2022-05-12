@@ -249,11 +249,11 @@ class NBI:
         mask = list()
         for i in range(len(x)):
             dat = np.load(x[i])
-            mask.append(np.isnan(dat).any() or np.isinf(dat))
-        mask = np.concatenate(mask)
+            mask.append(not np.isnan(dat).any() and not np.isinf(dat).any())
+        mask = np.array(mask)
         self.x_all.append(x[mask])
         self.y_all.append(y[mask])
-        print('nan/inf samples N=', mask.sum())
+        print('nan/inf samples N=', len(x) - mask.sum())
 
     def result(self):
         all_weights = np.concatenate(np.array(self.weights) * np.array(self.neff)[:, None])
