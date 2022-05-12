@@ -248,7 +248,7 @@ class NBI:
     def add_round_data(self, x, y):
         mask = list()
         for i in range(len(x)):
-            dat = np.load(x)
+            dat = np.load(x[i])
             mask.append(np.isnan(dat).any() or np.isinf(dat))
         mask = np.array(mask)
         self.x_all.append(x[mask])
