@@ -285,7 +285,8 @@ class NBI:
 
         logprior = self.log_prior(y)
         logproposal = self.log_prob(x, y)
-
+        print(loglike.shape, logprior.shape, logproposal.shape)
+        print(x.shape, x_path.shape, y.shape)
         log_weights = loglike + logprior - logproposal
         bad = np.isnan(log_weights) + np.isinf(log_weights)
         log_weights -= log_weights[~bad].max()
