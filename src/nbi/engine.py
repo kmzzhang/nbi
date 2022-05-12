@@ -102,7 +102,8 @@ class NBI:
         self.prior = prior_sampler
         self.log_prior = log_prior
         self.log_like = log_like
-        self.simulator = simulator_wrapper(physics)
+        # self.simulator = simulator_wrapper(physics)
+        self.simulator = physics
         self.process = instrumental
         self.directory = directory
         self.n_jobs = n_jobs
@@ -256,7 +257,7 @@ class NBI:
         print('nan/inf samples N=', len(x) - mask.sum())
 
     def result(self):
-        all_weights = np.concatenate(np.array(self.weights) * np.array(self.neff)[:, None])
+        all_weights = np.concatenate(np.array(self.weights) * (np.array(self.neff)[:, None] - 1))
         all_weights /= all_weights.sum()
         all_thetas = np.concatenate(self.y_all)
 
