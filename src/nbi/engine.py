@@ -1,6 +1,6 @@
 from .model import get_flow, DataParallelFlow
 from .data import BaseContainer
-from .utils import simulator_wrapper
+from .utils import parallel_simulate
 
 import os
 import corner
@@ -99,10 +99,9 @@ class NBI:
 
         self.modify_scales = modify_scales
 
-        self.prior = prior_sampler
-        self.log_prior = log_prior
-        self.log_like = log_like
-        # self.simulator = simulator_wrapper(physics)
+        self.draw_prior = prior_sampler
+        self.prior = log_prior
+        self.like = log_like
         self.simulator = physics
         self.process = instrumental
         self.directory = directory
@@ -157,10 +156,10 @@ class NBI:
         ys = self._draw_params(obs, n_per_round)
         np.save(os.path.join(self.directory, '0_y.npy'), ys)
 
-        x_path = self.simulate(ys)
+        x_path, good = self.simulate(ys)
         np.save(os.path.join(self.directory, '0_x.npy'), x_path)
 
-        self.add_round_data(x_path, ys)
+        self.add_round_data(x_path, ys, good)
 
         weights = self.importance_reweight(obs, self.x_all[-1], self.y_all[-1])
         self.weights.append(weights)
@@ -168,12 +167,13 @@ class NBI:
         if self.log_like is not None:
             neff = 1 / (weights ** 2).sum()
             self.neff.append(neff)
-            print('Effective sample size for round ' + str(self.round) + ': ', '%.1f' % neff)
-            print('Effective sample size for all rounds: ', '%.1f' % np.sum(self.neff))
+            print('Effective sample size', '%.1f' % neff)
 
         for i in range(n_rounds):
+
+            print('\n---------------------- Round: {} ----------------------'.format(self.round))
+
             self._init_scheduler(min_lr, decay_type=decay_type)
-            print('\nRound: {}'.format(i))
 
             x_round, y_round = self.get_round_data(n_reuse)
             data_container = BaseContainer(x_round, y_round, f_test=0, f_val=f_val, process=self.process)
@@ -192,35 +192,29 @@ class NBI:
             ys = self._draw_params(obs, n_per_round)
             np.save(os.path.join(self.directory, str(self.round + 1)) + '_y.npy', ys)
 
-            print('sample from round ' + str(self.round))
+            print('surrogate posterior')
             self.corner(obs, ys, truth=y_true)
 
-            x_path = self.simulate(ys)
+            x_path, good = self.simulate(ys)
             np.save(os.path.join(self.directory, str(self.round + 1)) + '_x.npy', x_path)
 
-            self.add_round_data(x_path, ys)
+            self.add_round_data(x_path, ys, good)
+
             weights = self.importance_reweight(obs, self.x_all[-1], self.y_all[-1])
             self.weights.append(weights)
 
             if self.log_like is not None:
                 neff = 1 / (weights ** 2).sum()
                 self.neff.append(neff)
-                print('Effective sample size for round ' + str(self.round) + ': ', '%.1f' % neff)
+                print('Effective sample size for this round', '%.1f' % neff)
                 print('Effective sample size for all rounds: ', '%.1f' % np.sum(self.neff))
 
-            print('posterior from round ' + str(self.round))
+            print('reweighted posterior from current round')
             self.corner(obs, ys, truth=y_true, weights=weights)
 
-            print('posterior from all rounds')
+            print('reweighted posterior from all rounds')
             all_thetas, all_weights = self.result()
             self.corner(obs, all_thetas, truth=y_true, weights=all_weights)
-
-            if y_true is not None:
-                loglike = self.log_prob(obs, y_true)
-                if self.wandb:
-                    wandb.log({"loglike": loglike})
-                print(loglike)
-            self.epoch = 0
 
             if np.sum(self.neff) > neff_stop and neff_stop > 0:
                 print('early stopping')
@@ -246,15 +240,12 @@ class NBI:
                     print('Effective sample size is %.1f' % neff)
                     return
 
-    def add_round_data(self, x, y):
-        mask = list()
-        for i in range(len(x)):
-            dat = np.load(x[i])
-            mask.append(not np.isnan(dat).any() and not np.isinf(dat).any())
-        mask = np.array(mask)
-        self.x_all.append(x[mask])
-        self.y_all.append(y[mask])
-        print('nan/inf samples N=', len(x) - mask.sum())
+    def add_round_data(self, x, y, good):
+
+        self.x_all.append(np.array(x)[good])
+        self.y_all.append(np.array(y)[good])
+        if len(x) != good.sum():
+            print('Number of simulations with nan/inf:', len(x) - good.sum())
 
     def result(self):
         all_weights = np.concatenate(np.array(self.weights) * (np.array(self.neff)[:, None] - 1))
@@ -275,18 +266,14 @@ class NBI:
 
             return x_round, y_round
 
-    def importance_reweight(self, x, x_path, y):
-        if self.log_like is None:
+    def importance_reweight(self, obs, x, y):
+        if self.like is None:
             return None
-        try:
-            loglike = self.log_like(x, y, x_path)
-        except:
-            loglike = self.log_like(x, y)
 
+        loglike = self.log_like(obs, x, y)
         logprior = self.log_prior(y)
-        logproposal = self.log_prob(x, y)
-        print(loglike.shape, logprior.shape, logproposal.shape)
-        print(x.shape, x_path.shape, y.shape)
+        logproposal = self.log_prob(obs, y)
+
         log_weights = loglike + logprior - logproposal
         bad = np.isnan(log_weights) + np.isinf(log_weights)
         log_weights -= log_weights[~bad].max()
@@ -294,6 +281,7 @@ class NBI:
         weights = np.exp(log_weights)
         weights[bad] = 0
         weights /= weights.sum()
+
 
         return weights
 
@@ -348,8 +336,10 @@ class NBI:
         return self.scale_y(s, back=True)[0]
 
     def simulate(self, thetas):
+
         if self.x_file is not None and self.round == 0:
             paths = np.load(self.x_file)
+            print('Use precomputed simulations for round ', self.round)
         else:
             path_round = os.path.join(self.directory, str(self.round))
             try:
@@ -359,10 +349,15 @@ class NBI:
             n = len(thetas)
             paths = np.array([os.path.join(path_round, str(i)+'.npy') for i in range(n)])
             per_job = n // self.n_jobs
-            jobs = [[thetas[i * per_job: (i + 1) * per_job], paths[i * per_job: (i + 1) * per_job]] for i in range(self.n_jobs)]
+            jobs = [[
+                thetas[i * per_job: (i + 1) * per_job],
+                paths[i * per_job: (i + 1) * per_job],
+                self.simulator
+                ] for i in range(self.n_jobs)]
             with Pool(self.n_jobs) as p:
-                p.map(self.simulator, jobs)
-        return paths
+                masks = p.map(parallel_simulate, jobs)
+            masks = np.concatenate(masks)
+        return paths, masks
 
     def _train_step(self):
         np.random.seed(self.epoch)
@@ -482,7 +477,7 @@ class NBI:
         if self.y_file is not None and self.round == 0:
             return np.load(self.y_file)
         elif self.round == 0:
-            return self.prior(n)
+            return self.draw_prior(n)
         else:
             params = self.infer(x, n)
             # logprior = self.log_prior(params)
@@ -513,11 +508,25 @@ class NBI:
         self.y_mean = y_list.mean(0, keepdims=True)
         self.y_std = y_list.std(0, keepdims=True)
 
+    def log_prior(self, y):
+        values = list()
+        for i in range(len(y)):
+            values.append(self.prior(y[i]))
+        return np.array(values)
+
+    def log_like(self, obs, x, y):
+        values = list()
+        for i in range(len(x)):
+            values.append(self.like(obs, x[i], y[i]))
+        return np.array(values)
+
     def log_prob(self, x, y):
         if self.round == 0:
             return self.log_prior(y)
+
         x = self.scale_x(x)
         y = self.scale_y(y)
+
         x = torch.from_numpy(x).type(self.dtype)
         y = torch.from_numpy(y).type(self.dtype)
         with torch.no_grad():
