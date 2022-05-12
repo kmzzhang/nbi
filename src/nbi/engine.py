@@ -250,7 +250,7 @@ class NBI:
         for i in range(len(x)):
             dat = np.load(x[i])
             mask.append(np.isnan(dat).any() or np.isinf(dat))
-        mask = np.array(mask)
+        mask = np.concatenate(mask)
         self.x_all.append(x[mask])
         self.y_all.append(y[mask])
         print('nan/inf samples N=', mask.sum())
