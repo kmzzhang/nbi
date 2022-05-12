@@ -340,6 +340,7 @@ class NBI:
         if self.x_file is not None and self.round == 0:
             paths = np.load(self.x_file)
             print('Use precomputed simulations for round ', self.round)
+            masks = np.array([True] * len(paths))
         else:
             path_round = os.path.join(self.directory, str(self.round))
             try:
