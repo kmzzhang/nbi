@@ -1,5 +1,6 @@
 from .model import get_flow, DataParallelFlow
 from .data import BaseContainer
+from .utils import simulator_wrapper
 
 import os
 import corner
@@ -101,7 +102,7 @@ class NBI:
         self.prior = prior_sampler
         self.log_prior = log_prior
         self.log_like = log_like
-        self.simulator = physics
+        self.simulator = simulator_wrapper(physics)
         self.process = instrumental
         self.directory = directory
         self.n_jobs = n_jobs
@@ -158,10 +159,9 @@ class NBI:
         x_path = self.simulate(ys)
         np.save(os.path.join(self.directory, '0_x.npy'), x_path)
 
-        weights = self.importance_reweight(obs, ys, x_path)
+        self.add_round_data(x_path, ys)
 
-        self.x_all.append(x_path)
-        self.y_all.append(ys)
+        weights = self.importance_reweight(obs, self.x_all[-1], self.y_all[-1])
         self.weights.append(weights)
 
         if self.log_like is not None:
@@ -182,7 +182,7 @@ class NBI:
                 print('\nEpoch: {}'.format(epoch))
                 self._train_step()
                 self._step_scheduler()
-                # self._validate_step()
+                self._validate_step()
                 if self.wandb:
                     wandb.log({"Train Loss": self.training_losses[-1], "Val Loss": self.validation_losses[-1]})
                 self.epoch = epoch
@@ -197,10 +197,8 @@ class NBI:
             x_path = self.simulate(ys)
             np.save(os.path.join(self.directory, str(self.round + 1)) + '_x.npy', x_path)
 
-            weights = self.importance_reweight(obs, ys, x_path)
-
-            self.x_all.append(x_path)
-            self.y_all.append(ys)
+            self.add_round_data(x_path, ys)
+            weights = self.importance_reweight(obs, self.x_all[-1], self.y_all[-1])
             self.weights.append(weights)
 
             if self.log_like is not None:
@@ -247,6 +245,16 @@ class NBI:
                     print('Effective sample size is %.1f' % neff)
                     return
 
+    def add_round_data(self, x, y):
+        mask = list()
+        for i in range(len(x)):
+            dat = np.load(x)
+            mask.append(np.isnan(dat).any() or np.isinf(dat))
+        mask = np.array(mask)
+        self.x_all.append(x[mask])
+        self.y_all.append(y[mask])
+        print('nan/inf samples N=', mask.sum())
+
     def result(self):
         all_weights = np.concatenate(np.array(self.weights) * np.array(self.neff)[:, None])
         all_weights /= all_weights.sum()
@@ -266,8 +274,7 @@ class NBI:
 
             return x_round, y_round
 
-    def importance_reweight(self, x, y, x_path):
-        print(x.shape, y.shape, x_path.shape)
+    def importance_reweight(self, x, x_path, y):
         if self.log_like is None:
             return None
         try:
