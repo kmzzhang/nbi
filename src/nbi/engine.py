@@ -531,7 +531,8 @@ class NBI:
         x = torch.from_numpy(x).type(self.dtype)
         y = torch.from_numpy(y).type(self.dtype)
         with torch.no_grad():
-            log_prob = self.network(x, y).cpu().numpy()[:,0] * -1
+            # it appears that DataParallal doesn't work properly here
+            log_prob = self.network.module(x, y).cpu().numpy()[:,0] * -1
         return log_prob
 
     def corner(
