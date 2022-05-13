@@ -544,12 +544,13 @@ class NBI:
             plot_datapoints=True,
             plot_density=False,
             range_=0.95,
-            truth_color='r'
+            truth_color='r',
+            n=5000
     ):
 
         range_ = [range_] * self.ndim
         if y is None:
-            y = self.infer(x)
+            y = self.infer(x, n)
         corner.corner(y,
                        truths=truth,
                        color=color,
