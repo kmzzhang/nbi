@@ -108,10 +108,12 @@ class NBI:
         self.n_jobs = n_jobs
 
         self.round = 0
+        self.early_stop_count = 0
         self.x_all = list()
         self.y_all = list()
         self.weights = list()
         self.neff = list()
+        self.state_dict = None
 
         try:
             os.mkdir(self.directory)
@@ -136,7 +138,8 @@ class NBI:
             wandb_enabled=False,
             neff_stop=-1,
             early_stop_train=True,
-            f_val=0,
+            early_stop_patience=-1,
+            f_val=0.1,
             lr=0.001,
             min_lr=None,
             x_file=None,
@@ -151,23 +154,9 @@ class NBI:
         self._init_wandb(project, wandb_enabled)
 
         if min_lr is None:
-            min_lr = lr * 0.001
+            min_lr = lr * 0.01
 
-        ys = self._draw_params(obs, n_per_round)
-        np.save(os.path.join(self.directory, '0_y.npy'), ys)
-
-        x_path, good = self.simulate(ys)
-        np.save(os.path.join(self.directory, '0_x.npy'), x_path)
-
-        self.add_round_data(x_path, ys, good)
-
-        weights = self.importance_reweight(obs, self.x_all[-1], self.y_all[-1])
-        self.weights.append(weights)
-
-        if self.log_like is not None:
-            neff = 1 / (weights ** 2).sum()
-            self.neff.append(neff)
-            print('Effective sample size', '%.1f' % neff)
+        self.prepare_data(obs, n_per_round)
 
         for i in range(n_rounds):
 
@@ -180,65 +169,92 @@ class NBI:
             self._init_loader(data_container, train_batch, val_batch)
 
             for epoch in range(n_epochs):
+                self.epoch = epoch
                 print('\nEpoch: {}'.format(epoch))
                 self._train_step()
                 self._step_scheduler()
                 self._validate_step()
                 if self.wandb:
                     wandb.log({"Train Loss": self.training_losses[-1], "Val Loss": self.validation_losses[-1]})
-                self.epoch = epoch
+
+                self.save_state_dict()
+
+                if self.stop_training(early_stop_patience):
+                    print('early stopping, loading state dict from epoch', self.epoch - early_stop_patience - 2)
+                    self.load_state_dict(self.epoch - early_stop_patience - 2)
+                    break
 
             self.round += 1
-            ys = self._draw_params(obs, n_per_round)
-            np.save(os.path.join(self.directory, str(self.round + 1)) + '_y.npy', ys)
+            self.prepare_data(obs, n_per_round, y_true)
 
+
+            if np.sum(self.neff) > neff_stop > 0:
+                print('early stopping')
+                return
+
+            if early_stop_train and self.round > 1 and neff_stop > 0:
+                if self.neff[-1] < self.neff[-2] * 1.05:
+                    n_required = neff_stop - np.sum(self.neff)
+                    f_accept = self.neff[-1] / n_per_round
+                    if f_accept < 0.01:
+                        print('failed: acceptance rate < 1%')
+                        return
+                    n_required /= f_accept
+                    n_required = int(n_required)
+                    print('stop training')
+                    print('importance sampling N =', n_required)
+
+                    self.round += 1
+                    self.prepare_data(obs, n_required, y_true)
+                    return
+
+    def prepare_data(self, obs, n_per_round, y_true=None):
+
+        ys = self._draw_params(obs, n_per_round)
+        np.save(os.path.join(self.directory, str(self.round)) + '_y.npy', ys)
+
+        if self.round > 0:
             print('surrogate posterior')
             self.corner(obs, ys, truth=y_true)
 
-            x_path, good = self.simulate(ys)
-            np.save(os.path.join(self.directory, str(self.round + 1)) + '_x.npy', x_path)
+        x_path, good = self.simulate(ys)
+        np.save(os.path.join(self.directory, str(self.round)) + '_x.npy', x_path)
 
-            self.add_round_data(x_path, ys, good)
+        self.add_round_data(x_path, ys, good)
 
-            weights = self.importance_reweight(obs, self.x_all[-1], self.y_all[-1])
-            self.weights.append(weights)
+        weights = self.importance_reweight(obs, self.x_all[-1], self.y_all[-1])
+        self.weights.append(weights)
 
-            if self.log_like is not None:
-                neff = 1 / (weights ** 2).sum()
-                self.neff.append(neff)
-                print('Effective sample size for this round', '%.1f' % neff)
-                print('Effective sample size for all rounds: ', '%.1f' % np.sum(self.neff))
+        if self.round > 0:
+            self.weighted_corner(obs, y_true)
 
+        if self.log_like is not None:
+            neff = 1 / (weights ** 2).sum() - 1
+            self.neff.append(neff)
+            print('Effective sample size for this round', '%.1f' % neff)
+            print('Effective sample size for all rounds: ', '%.1f' % np.sum(self.neff))
+
+    def weighted_corner(self, obs, y_true):
+        try:
             print('reweighted posterior from current round')
-            self.corner(obs, ys, truth=y_true, weights=weights)
+            self.corner(obs, self.y_all[-1], truth=y_true, weights=self.weights[-1])
 
             print('reweighted posterior from all rounds')
             all_thetas, all_weights = self.result()
             self.corner(obs, all_thetas, truth=y_true, weights=all_weights)
+        except:
+            print('corner plot failed')
 
-            if np.sum(self.neff) > neff_stop and neff_stop > 0:
-                print('early stopping')
-                return
-            if early_stop_train and self.round > 1:
-                if self.neff[-1] * 1.1 < self.neff[-2]:
-                    n_required = neff_stop - np.sum(self.neff)
-                    n_required /= self.neff[-1] / n_per_round
-                    n_required = int(n_required)
-                    print('stop training')
-                    print('importance sampling N =', n_required)
-                    ys, weights = self._draw_params(obs, n_required)
-                    neff = 1 / (weights ** 2).sum()
+    def stop_training(self, patience=1):
+        if self.epoch < patience + 2 or patience == -1:
+            return False
 
-                    self.round += 1
-                    x_path = self.simulate(ys)
-                    np.save(os.path.join(self.directory, str(self.round + 1)) + '_x.npy', x_path)
-                    np.save(os.path.join(self.directory, str(self.round + 1)) + '_y.npy', ys)
-                    self.x_all.append(x_path)
-                    self.y_all.append(ys)
-                    self.neff.append(neff)
-                    self.weights.append(weights)
-                    print('Effective sample size is %.1f' % neff)
-                    return
+        prev_losses = np.array(self.vloss[-1 * patience - 1:])
+        base_loss = self.vloss[-1 * patience - 2]
+        return (prev_losses > base_loss).all()
+
+    def revert_state(self):
+        self.get_network().load_state_dict(self.prev_state)
 
     def add_round_data(self, x, y, good):
 
@@ -282,7 +298,6 @@ class NBI:
         weights[bad] = 0
         weights /= weights.sum()
 
-
         return weights
 
     def init_env(self, idx_gpu):
@@ -305,12 +320,20 @@ class NBI:
     def get_state_dict(self):
         return self.get_network().state_dict()
 
-    def load_state_dict(self, file, x_scale, y_scale):
-        self.x_mean = x_scale[:, 0]
-        self.x_std = x_scale[:, 1]
-        self.y_mean = y_scale[:, 0]
-        self.y_std = y_scale[:, 1]
-        self.get_network().load_state_dict(torch.load(file, map_location=self.map_location))
+    # def load_state_dict(self, file, x_scale, y_scale):
+    def load_state_dict(self, epoch):
+        path_round = os.path.join(self.directory, str(self.round))
+        path = os.path.join(path_round, str(epoch) + '.pth')
+        # self.x_mean = x_scale[:, 0]
+        # self.x_std = x_scale[:, 1]
+        # self.y_mean = y_scale[:, 0]
+        # self.y_std = y_scale[:, 1]
+        self.get_network().load_state_dict(torch.load(path, map_location=self.map_location))
+
+    def save_state_dict(self):
+        path_round = os.path.join(self.directory, str(self.round))
+        path = os.path.join(path_round, str(self.epoch) + '.pth')
+        torch.save(self.get_state_dict(), path)
 
     def scale_y(self, y, back=False):
         if back:
@@ -332,7 +355,13 @@ class NBI:
         x = self.scale_x(x)
         x = torch.from_numpy(x).type(self.dtype)
         with torch.no_grad():
-            s = self.get_network()(x, n=n, sample=True).cpu().numpy()
+            if n > 20000:
+                s = list()
+                for i in range(n // 20000 + 1):
+                    s.append(self.get_network()(x, n=n, sample=True).cpu().numpy())
+                s = np.concatenate(s)[:n]
+            else:
+                s = self.get_network()(x, n=n, sample=True).cpu().numpy()
         return self.scale_y(s, back=True)[0]
 
     def simulate(self, thetas):
@@ -354,10 +383,17 @@ class NBI:
                 thetas[i * per_job: (i + 1) * per_job],
                 paths[i * per_job: (i + 1) * per_job],
                 self.simulator
-                ] for i in range(self.n_jobs)]
+            ] for i in range(self.n_jobs - 1)]
+
+            jobs.append([
+                thetas[(self.n_jobs - 1) * per_job:],
+                paths[(self.n_jobs - 1) * per_job:],
+                self.simulator])
+
             with Pool(self.n_jobs) as p:
                 masks = p.map(parallel_simulate, jobs)
             masks = np.concatenate(masks)
+
         return paths, masks
 
     def _train_step(self):
@@ -426,7 +462,6 @@ class NBI:
 
     def _init_train(self, lr, clip=85):
 
-        self.epoch = 0
         self.clip = clip
         self.optimizer = optim.Adam(self.network.parameters(), lr=lr)
         self.best_validation_loss = float('inf')
