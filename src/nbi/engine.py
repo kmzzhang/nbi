@@ -113,7 +113,13 @@ class NBI:
         self.y_all = list()
         self.weights = list()
         self.neff = list()
-        self.state_dict = None
+        self.state_dict_0 = self.get_state_dict()
+
+        self.prev_state = None
+        self.prev_x_mean = None
+        self.prev_x_std = None
+        self.prev_y_mean = None
+        self.prev_y_std = None
 
         try:
             os.mkdir(self.directory)
@@ -129,7 +135,7 @@ class NBI:
             obs,
             n_rounds,
             n_per_round,
-            n_epochs,
+            n_epochs=100,
             n_reuse=0,
             y_true=None,
             train_batch=512,
@@ -150,11 +156,11 @@ class NBI:
         self.n_epochs = n_epochs
         self.x_file = x_file
         self.y_file = y_file
-        self._init_train(lr)
+
         self._init_wandb(project, wandb_enabled)
 
         if min_lr is None:
-            min_lr = lr * 0.01
+            min_lr = lr * 0.001
 
         self.prepare_data(obs, n_per_round)
 
@@ -162,6 +168,7 @@ class NBI:
 
             print('\n---------------------- Round: {} ----------------------'.format(self.round))
 
+            self._init_train(lr)
             self._init_scheduler(min_lr, decay_type=decay_type)
 
             x_round, y_round = self.get_round_data(n_reuse)
@@ -182,22 +189,26 @@ class NBI:
                 if self.stop_training(early_stop_patience):
                     print('early stopping, loading state dict from epoch', self.epoch - early_stop_patience - 2)
                     self.load_state_dict(self.epoch - early_stop_patience - 2)
+                    self.save_current_state()
                     break
+
+            self.save_current_state()
 
             self.round += 1
             self.prepare_data(obs, n_per_round, y_true)
 
-
             if np.sum(self.neff) > neff_stop > 0:
                 print('early stopping')
+                self.corner_all(obs, y_true)
                 return
 
             if early_stop_train and self.round > 1 and neff_stop > 0:
-                if self.neff[-1] < self.neff[-2] * 1.05:
+                if self.neff[-1] < self.neff[-2]:
+                    self.load_prev_state()
                     n_required = neff_stop - np.sum(self.neff)
-                    f_accept = self.neff[-1] / n_per_round
-                    if f_accept < 0.01:
-                        print('failed: acceptance rate < 1%')
+                    f_accept = self.neff[-2] / n_per_round
+                    if f_accept < 0.005:
+                        print('failed: acceptance rate < 0.5%')
                         return
                     n_required /= f_accept
                     n_required = int(n_required)
@@ -206,7 +217,30 @@ class NBI:
 
                     self.round += 1
                     self.prepare_data(obs, n_required, y_true)
+                    self.corner_all(obs, y_true)
                     return
+
+        self.corner_all(obs, y_true)
+        return
+
+    def save_current_state(self):
+        self.prev_state = self.get_state_dict()
+        self.prev_x_mean = self.x_mean
+        self.prev_x_std = self.x_std
+        self.prev_y_mean = self.y_mean
+        self.prev_y_std = self.y_std
+
+    def load_prev_state(self):
+        self.get_network().load_state_dict(self.prev_state)
+        self.x_mean = self.prev_x_mean
+        self.x_std = self.prev_x_std
+        self.y_mean = self.prev_y_mean
+        self.y_std = self.prev_y_std
+
+    def corner_all(self, obs, y_true):
+        print('reweighted posterior from all rounds')
+        all_thetas, all_weights = self.result()
+        self.corner(obs, all_thetas, truth=y_true, weights=all_weights)
 
     def prepare_data(self, obs, n_per_round, y_true=None):
 
@@ -239,9 +273,6 @@ class NBI:
             print('reweighted posterior from current round')
             self.corner(obs, self.y_all[-1], truth=y_true, weights=self.weights[-1])
 
-            print('reweighted posterior from all rounds')
-            all_thetas, all_weights = self.result()
-            self.corner(obs, all_thetas, truth=y_true, weights=all_weights)
         except:
             print('corner plot failed')
 
@@ -264,7 +295,7 @@ class NBI:
             print('Number of simulations with nan/inf:', len(x) - good.sum())
 
     def result(self):
-        all_weights = np.concatenate(np.array(self.weights) * (np.array(self.neff)[:, None] - 1))
+        all_weights = np.concatenate([self.weights[i] * self.neff[i] for i in range(self.round + 1)])
         all_weights /= all_weights.sum()
         all_thetas = np.concatenate(self.y_all)
 
@@ -463,9 +494,8 @@ class NBI:
     def _init_train(self, lr, clip=85):
 
         self.clip = clip
+        self.get_network().load_state_dict(self.state_dict_0)
         self.optimizer = optim.Adam(self.network.parameters(), lr=lr)
-        self.best_validation_loss = float('inf')
-        self.best_validation_epoch = 0
 
         self.prev_clip = 1e8
         torch.manual_seed(0)
@@ -506,8 +536,9 @@ class NBI:
         self.train_loader = DataLoader(train_container, batch_size=train_batch, shuffle=True, **kwargs)
         self.valid_loader = DataLoader(val_container, batch_size=val_batch, **kwargs)
 
-        if self.round == 0:
-            self._init_scales()
+        # if self.round == 0:
+        # reset network every round --> also reset scales
+        self._init_scales()
 
     def _draw_params(self, x, n):
         if self.y_file is not None and self.round == 0:
@@ -579,19 +610,20 @@ class NBI:
             truth=None,
             plot_datapoints=True,
             plot_density=False,
-            range_=0.95,
+            range_=None,
             truth_color='r',
             n=5000
     ):
 
-        range_ = [range_] * self.ndim
+        if range_ is not None:
+            range_ = [range_] * self.ndim
         if y is None:
             y = self.infer(x, n)
         corner.corner(y,
                        truths=truth,
                        color=color,
                        plot_datapoints=plot_datapoints,
-                       # range=range_,
+                       range=range_,
                        plot_density=plot_density,
                        truth_color=truth_color,
                        weights=weights,
