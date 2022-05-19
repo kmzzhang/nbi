@@ -150,7 +150,8 @@ class NBI:
             min_lr=None,
             x_file=None,
             y_file=None,
-            decay_type='SGDR'
+            decay_type='SGDR',
+            debug=False
     ):
 
         self.n_epochs = n_epochs
@@ -191,6 +192,9 @@ class NBI:
                     self.load_state_dict(self.epoch - early_stop_patience - 2)
                     self.save_current_state()
                     break
+                if debug:
+                    ys = self.infer(obs, n_per_round)
+                    self.corner(obs, ys, truth=y_true)
 
             self.save_current_state()
 
