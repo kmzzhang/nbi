@@ -401,16 +401,17 @@ class NBI:
 
     def simulate(self, thetas):
 
+        path_round = os.path.join(self.directory, str(self.round))
+        try:
+            os.mkdir(path_round)
+        except:
+            pass
+
         if self.x_file is not None and self.round == 0:
             paths = np.load(self.x_file)
             print('Use precomputed simulations for round ', self.round)
             masks = np.array([True] * len(paths))
         else:
-            path_round = os.path.join(self.directory, str(self.round))
-            try:
-                os.mkdir(path_round)
-            except:
-                pass
             n = len(thetas)
             paths = np.array([os.path.join(path_round, str(i)+'.npy') for i in range(n)])
             per_job = n // self.n_jobs
