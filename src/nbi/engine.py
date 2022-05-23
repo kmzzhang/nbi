@@ -1,5 +1,6 @@
 from .model import get_flow, DataParallelFlow
 from .data import BaseContainer
+from .utils import parallel_simulate
 
 import os
 import corner
@@ -34,16 +35,57 @@ default_flow_config = {
 
 
 class NBI:
-    def __init__(self, featurizer, dim_param, physics=None, prior=None, instrumental=None, flow_config={},
-                 idx_gpu=0, parallel=False, directory='', n_jobs=1, modify_scales=None, labels=None):
+    """ Neural bayesian inference engine for astronomical data
+    """
+
+    def __init__(
+            self,
+            featurizer,
+            dim_param,
+            physics=None,
+            prior_sampler=None,
+            log_prior=None,
+            log_like=None,
+            instrumental=None,
+            flow_config={},
+            idx_gpu=0,
+            parallel=False,
+            directory='',
+            n_jobs=1,
+            modify_scales=None,
+            labels=None
+    ):
+        """
+
+        Parameters
+        ----------
+        featurizer (nn.Module): pytorch network which maps input sequence of shape [Batch, Channel, Length] to
+                output feature vector of shape [Batch, Dimension]. See NBI.get_featurizer() for pre-defined ones.
+        dim_param (int): number of inferred parameters
+        physics (callable): a function which takes (thetas, files)
+        prior_sampler
+        log_prior
+        log_like
+        instrumental
+        flow_config
+        idx_gpu
+        parallel
+        directory
+        n_jobs
+        modify_scales
+        labels
+        """
+
         self.init_env(idx_gpu)
         self.ndim = dim_param
         config = copy.copy(default_flow_config)
         config.update(flow_config)
         corner_kwargs.update({'labels':labels})
+
         self.network = get_flow(featurizer, dim_param, **config).type(self.dtype)
         if parallel:
             self.network = DataParallelFlow(self.network)
+
         self.epoch = 0
         self.prev_clip = 50000
         self.tloss = list()
@@ -57,16 +99,241 @@ class NBI:
 
         self.modify_scales = modify_scales
 
-        self.prior = prior
+        self.draw_prior = prior_sampler
+        self.prior = log_prior
+        self.like = log_like
         self.simulator = physics
         self.process = instrumental
         self.directory = directory
         self.n_jobs = n_jobs
 
+        self.round = 0
+        self.early_stop_count = 0
+        self.x_all = list()
+        self.y_all = list()
+        self.weights = list()
+        self.neff = list()
+        self.state_dict_0 = self.get_state_dict()
+
+        self.prev_state = None
+        self.prev_x_mean = None
+        self.prev_x_std = None
+        self.prev_y_mean = None
+        self.prev_y_std = None
+
         try:
             os.mkdir(self.directory)
         except:
             pass
+
+    def train(self, *args, **kwargs):
+        # deprecated
+        return self.run(*args, **kwargs)
+
+    def run(
+            self,
+            obs,
+            n_rounds,
+            n_per_round,
+            n_epochs=100,
+            n_reuse=0,
+            y_true=None,
+            train_batch=512,
+            val_batch=512,
+            project='test',
+            wandb_enabled=False,
+            neff_stop=-1,
+            early_stop_train=True,
+            early_stop_patience=-1,
+            f_val=0.1,
+            lr=0.001,
+            min_lr=None,
+            x_file=None,
+            y_file=None,
+            decay_type='SGDR',
+            debug=False
+    ):
+
+        self.n_epochs = n_epochs
+        self.x_file = x_file
+        self.y_file = y_file
+
+        self._init_wandb(project, wandb_enabled)
+
+        if min_lr is None:
+            min_lr = lr * 0.001
+
+        self.prepare_data(obs, n_per_round)
+
+        for i in range(n_rounds):
+
+            print('\n---------------------- Round: {} ----------------------'.format(self.round))
+
+            self._init_train(lr)
+            self._init_scheduler(min_lr, decay_type=decay_type)
+
+            x_round, y_round = self.get_round_data(n_reuse)
+            data_container = BaseContainer(x_round, y_round, f_test=0, f_val=f_val, process=self.process)
+            self._init_loader(data_container, train_batch, val_batch)
+
+            for epoch in range(n_epochs):
+                self.epoch = epoch
+                print('\nEpoch: {}'.format(epoch))
+                self._train_step()
+                self._step_scheduler()
+                self._validate_step()
+                if self.wandb:
+                    wandb.log({"Train Loss": self.training_losses[-1], "Val Loss": self.validation_losses[-1]})
+
+                self.save_state_dict()
+
+                if self.stop_training(early_stop_patience):
+                    print('early stopping, loading state dict from epoch', self.epoch - early_stop_patience - 2)
+                    self.load_state_dict(self.epoch - early_stop_patience - 2)
+                    self.save_current_state()
+                    break
+                if debug:
+                    ys = self.infer(obs, n_per_round)
+                    self.corner(obs, ys, truth=y_true)
+
+            self.save_current_state()
+
+            self.round += 1
+            self.prepare_data(obs, n_per_round, y_true)
+
+            if np.sum(self.neff) > neff_stop > 0:
+                print('early stopping')
+                self.corner_all(obs, y_true)
+                return
+
+            if early_stop_train and self.round > 1 and neff_stop > 0:
+                if self.neff[-1] < self.neff[-2]:
+                    self.load_prev_state()
+                    n_required = neff_stop - np.sum(self.neff)
+                    f_accept = self.neff[-2] / n_per_round
+                    if f_accept < 0.005:
+                        print('failed: acceptance rate < 0.5%')
+                        return
+                    n_required /= f_accept
+                    n_required = int(n_required)
+                    print('stop training')
+                    print('importance sampling N =', n_required)
+
+                    self.round += 1
+                    self.prepare_data(obs, n_required, y_true)
+                    self.corner_all(obs, y_true)
+                    return
+
+        self.corner_all(obs, y_true)
+        return
+
+    def save_current_state(self):
+        self.prev_state = self.get_state_dict()
+        self.prev_x_mean = self.x_mean
+        self.prev_x_std = self.x_std
+        self.prev_y_mean = self.y_mean
+        self.prev_y_std = self.y_std
+
+    def load_prev_state(self):
+        self.get_network().load_state_dict(self.prev_state)
+        self.x_mean = self.prev_x_mean
+        self.x_std = self.prev_x_std
+        self.y_mean = self.prev_y_mean
+        self.y_std = self.prev_y_std
+
+    def corner_all(self, obs, y_true):
+        print('reweighted posterior from all rounds')
+        all_thetas, all_weights = self.result()
+        self.corner(obs, all_thetas, truth=y_true, weights=all_weights)
+
+    def prepare_data(self, obs, n_per_round, y_true=None):
+
+        ys = self._draw_params(obs, n_per_round)
+        np.save(os.path.join(self.directory, str(self.round)) + '_y.npy', ys)
+
+        if self.round > 0:
+            print('surrogate posterior')
+            self.corner(obs, ys, truth=y_true)
+
+        x_path, good = self.simulate(ys)
+        np.save(os.path.join(self.directory, str(self.round)) + '_x.npy', x_path)
+
+        self.add_round_data(x_path, ys, good)
+
+        weights = self.importance_reweight(obs, self.x_all[-1], self.y_all[-1])
+        self.weights.append(weights)
+
+        if self.round > 0:
+            self.weighted_corner(obs, y_true)
+
+        if self.log_like is not None:
+            neff = 1 / (weights ** 2).sum() - 1
+            self.neff.append(neff)
+            print('Effective sample size for this round', '%.1f' % neff)
+            print('Effective sample size for all rounds: ', '%.1f' % np.sum(self.neff))
+
+    def weighted_corner(self, obs, y_true):
+        try:
+            print('reweighted posterior from current round')
+            self.corner(obs, self.y_all[-1], truth=y_true, weights=self.weights[-1])
+
+        except:
+            print('corner plot failed')
+
+    def stop_training(self, patience=1):
+        if self.epoch < patience + 2 or patience == -1:
+            return False
+
+        prev_losses = np.array(self.vloss[-1 * patience - 1:])
+        base_loss = self.vloss[-1 * patience - 2]
+        return (prev_losses > base_loss).all()
+
+    def revert_state(self):
+        self.get_network().load_state_dict(self.prev_state)
+
+    def add_round_data(self, x, y, good):
+
+        self.x_all.append(np.array(x)[good])
+        self.y_all.append(np.array(y)[good])
+        if len(x) != good.sum():
+            print('Number of simulations with nan/inf:', len(x) - good.sum())
+
+    def result(self):
+        all_weights = np.concatenate([self.weights[i] * self.neff[i] for i in range(self.round + 1)])
+        all_weights /= all_weights.sum()
+        all_thetas = np.concatenate(self.y_all)
+
+        return all_thetas, all_weights
+
+    def get_round_data(self, n_reuse):
+        if n_reuse == -1:
+            return np.concatenate(self.x_all), np.concatenate(self.y_all)
+        else:
+            x_round = self.x_all[max(0, self.round - n_reuse): self.round + 1]
+            x_round = np.concatenate(x_round)
+
+            y_round = self.y_all[max(0, self.round - n_reuse): self.round + 1]
+            y_round = np.concatenate(y_round)
+
+            return x_round, y_round
+
+    def importance_reweight(self, obs, x, y):
+        if self.like is None:
+            return None
+
+        loglike = self.log_like(obs, x, y)
+        logprior = self.log_prior(y)
+        logproposal = self.log_prob(obs, y)
+
+        log_weights = loglike + logprior - logproposal
+        bad = np.isnan(log_weights) + np.isinf(log_weights)
+        log_weights -= log_weights[~bad].max()
+
+        weights = np.exp(log_weights)
+        weights[bad] = 0
+        weights /= weights.sum()
+
+        return weights
 
     def init_env(self, idx_gpu):
         torch.manual_seed(0)
@@ -88,48 +355,82 @@ class NBI:
     def get_state_dict(self):
         return self.get_network().state_dict()
 
-    def load_state_dict(self, file, x_scale, y_scale):
-        self.x_mean = x_scale[:, 0]
-        self.x_std = x_scale[:, 1]
-        self.y_mean = y_scale[:, 0]
-        self.y_std = y_scale[:, 1]
-        self.get_network().load_state_dict(torch.load(file, map_location=self.map_location))
+    # def load_state_dict(self, file, x_scale, y_scale):
+    def load_state_dict(self, epoch):
+        path_round = os.path.join(self.directory, str(self.round))
+        path = os.path.join(path_round, str(epoch) + '.pth')
+        # self.x_mean = x_scale[:, 0]
+        # self.x_std = x_scale[:, 1]
+        # self.y_mean = y_scale[:, 0]
+        # self.y_std = y_scale[:, 1]
+        self.get_network().load_state_dict(torch.load(path, map_location=self.map_location))
+
+    def save_state_dict(self):
+        path_round = os.path.join(self.directory, str(self.round))
+        path = os.path.join(path_round, str(self.epoch) + '.pth')
+        torch.save(self.get_state_dict(), path)
 
     def scale_y(self, y, back=False):
         if back:
             return y * self.y_std + self.y_mean
         else:
+            if len(y.shape) != 2:
+                y = np.expand_dims(y, axis=list(range(2 - len(y.shape))))
             return (y - self.y_mean) / self.y_std
 
     def scale_x(self, x, back=False):
         if back:
             return x * self.x_std + self.x_mean
         else:
+            if len(x.shape) != 3:
+                x = np.expand_dims(x, axis=list(range(3 - len(x.shape))))
             return (x - self.x_mean) / self.x_std
 
     def infer(self, x, n=5000):
         x = self.scale_x(x)
         x = torch.from_numpy(x).type(self.dtype)
         with torch.no_grad():
-            s = self.get_network()(x, n=n, sample=True).cpu().numpy()
+            if n > 20000:
+                s = list()
+                for i in range(n // 20000 + 1):
+                    s.append(self.get_network()(x, n=n, sample=True).cpu().numpy())
+                s = np.concatenate(s)[:n]
+            else:
+                s = self.get_network()(x, n=n, sample=True).cpu().numpy()
         return self.scale_y(s, back=True)[0]
 
-    def simulate(self, thetas, x_files=None):
-        if x_files is not None:
-            paths = np.load(x_files)
+    def simulate(self, thetas):
+
+        path_round = os.path.join(self.directory, str(self.round))
+        try:
+            os.mkdir(path_round)
+        except:
+            pass
+
+        if self.x_file is not None and self.round == 0:
+            paths = np.load(self.x_file)
+            print('Use precomputed simulations for round ', self.round)
+            masks = np.array([True] * len(paths))
         else:
-            path_round = os.path.join(self.directory, str(self.round))
-            try:
-                os.mkdir(path_round)
-            except:
-                pass
             n = len(thetas)
             paths = np.array([os.path.join(path_round, str(i)+'.npy') for i in range(n)])
             per_job = n // self.n_jobs
-            jobs = [[thetas[i * per_job: (i + 1) * per_job], paths[i * per_job: (i + 1) * per_job]] for i in range(self.n_jobs)]
+            jobs = [[
+                thetas[i * per_job: (i + 1) * per_job],
+                paths[i * per_job: (i + 1) * per_job],
+                self.simulator
+            ] for i in range(self.n_jobs - 1)]
+
+            jobs.append([
+                thetas[(self.n_jobs - 1) * per_job:],
+                paths[(self.n_jobs - 1) * per_job:],
+                self.simulator])
+
             with Pool(self.n_jobs) as p:
-                p.map(self.simulator, jobs)
-        return paths
+                masks = p.map(parallel_simulate, jobs)
+            masks = np.concatenate(masks)
+
+        return paths, masks
 
     def _train_step(self):
         np.random.seed(self.epoch)
@@ -197,11 +498,9 @@ class NBI:
 
     def _init_train(self, lr, clip=85):
 
-        self.epoch = 0
         self.clip = clip
+        self.get_network().load_state_dict(self.state_dict_0)
         self.optimizer = optim.Adam(self.network.parameters(), lr=lr)
-        self.best_validation_loss = float('inf')
-        self.best_validation_epoch = 0
 
         self.prev_clip = 1e8
         torch.manual_seed(0)
@@ -242,93 +541,22 @@ class NBI:
         self.train_loader = DataLoader(train_container, batch_size=train_batch, shuffle=True, **kwargs)
         self.valid_loader = DataLoader(val_container, batch_size=val_batch, **kwargs)
 
-    def _draw_params(self, x, n, y_file=None):
-        if y_file is not None:
-            return np.load(y_file)
+        # if self.round == 0:
+        # reset network every round --> also reset scales
+        self._init_scales()
+
+    def _draw_params(self, x, n):
+        if self.y_file is not None and self.round == 0:
+            return np.load(self.y_file)
         elif self.round == 0:
-            return self.prior(n)
+            return self.draw_prior(n)
         else:
-            if len(x.shape) == 1:
-                return self.infer(x[None, None, :], n)
-            else:
-                return self.infer(x[None, :], n)
-    """
-    def apt_loss(self, x, y):
-       
-        Code taken from sbi: https://github.com/mackelab/sbi
-        Return log probability of the proposal posterior for atomic proposals.
-        We have two main options when evaluating the proposal posterior.
-            (1) Generate atoms from the proposal prior.
-            (2) Generate atoms from a more targeted distribution, such as the most
-                recent posterior.
-        If we choose the latter, it is likely beneficial not to do this in the first
-        round, since we would be sampling from a randomly-initialized neural density
-        estimator.
-        Args:
-            theta: Batch of parameters θ.  (N, D)
-            x: Batch of data.              (N, 1, 7200)
-            masks: Mask that is True for prior samples in the batch in order to train
-                them with prior loss.
-        Returns:
-            Log-probability of the proposal posterior.
-        
-
-        batch_size = theta.shape[0]
-
-        # Each set of parameter atoms is evaluated using the same x,
-        # so we repeat rows of the data x, e.g. [1, 2] -> [1, 1, 2, 2]
-        repeated_x = repeat_rows(x, num_atoms)
-
-        # To generate the full set of atoms for a given item in the batch,
-        # we sample without replacement num_atoms - 1 times from the rest
-        # of the theta in the batch.
-        probs = ones(batch_size, batch_size) * (1 - eye(batch_size)) / (batch_size - 1)
-
-        choices = torch.multinomial(probs, num_samples=num_atoms - 1, replacement=False)
-        contrasting_theta = theta[choices]
-
-        # We can now create our sets of atoms from the contrasting parameter sets
-        # we have generated.
-        atomic_theta = torch.cat((theta[:, None, :], contrasting_theta), dim=1).reshape(
-            batch_size * num_atoms, -1
-        )
-
-        # Evaluate large batch giving (batch_size * num_atoms) log prob posterior evals.
-        log_prob_posterior = self.network(repeated_x, atomic_theta) * -1
-        # _assert_all_finite(log_prob_posterior, "posterior eval")
-        log_prob_posterior = log_prob_posterior.reshape(batch_size, num_atoms)
-        # print(nde.transform_pm(atomic_theta))
-        # print(log_prob_posterior)
-
-        # Get (batch_size * num_atoms) log prob prior evals.
-        log_prob_prior = ln_prior(atomic_theta)
-        log_prob_prior = log_prob_prior.reshape(batch_size, num_atoms)
-        # _assert_all_finite(log_prob_prior, "prior eval")
-
-        # Compute unnormalized proposal posterior.
-        # print(log_prob_posterior, torch.from_numpy(log_prob_prior))
-        unnormalized_log_prob = log_prob_posterior - torch.from_numpy(log_prob_prior).type(dfloat)
-        # unnormalized_log_prob = log_prob_posterior
-        # print('log_prob: [true theta, contrasting atoms ...]')
-        # print(log_prob_posterior.mean())
-
-        # Normalize proposal posterior across discrete set of atoms.
-        log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
-            unnormalized_log_prob, dim=-1
-        )
-        # print(log_prob_proposal_posterior[0])
-        # _assert_all_finite(log_prob_proposal_posterior, "proposal posterior eval")
-
-        # XXX This evaluates the posterior on _all_ prior samples
-        # if _use_combined_loss:
-        #     log_prob_posterior_non_atomic = _posterior.net.log_prob(theta, x)
-        #     masks = masks.reshape(-1)
-        #     log_prob_proposal_posterior = (
-        #             masks * log_prob_posterior_non_atomic + log_prob_proposal_posterior
-        #     )
-
-        return log_prob_proposal_posterior * -1, unnormalized_log_prob[:, 0]
-    """
+            params = self.infer(x, n)
+            # logprior = self.log_prior(params)
+            # if np.isinf(logprior).any():
+                # f_reject = np.isinf(logprior).sum() / n
+                # more_params = self.infer(x, int(n * f_reject / (1 - f_reject)))
+            return params
 
     def _init_scales(self):
         x_list = list()
@@ -352,75 +580,57 @@ class NBI:
         self.y_mean = y_list.mean(0, keepdims=True)
         self.y_std = y_list.std(0, keepdims=True)
 
-    def train(self, x, n_rounds, n_per_round, n_epochs, y=None, train_batch=512, val_batch=512, project='test',
-              wandb_enabled=False, f_val=0.2, lr=0.001, min_lr=None, x_file=None, y_file=None, decay_type='SGDR'):
+    def log_prior(self, y):
+        values = list()
+        for i in range(len(y)):
+            values.append(self.prior(y[i]))
+        return np.array(values)
 
-        self.n_epochs = n_epochs
-        self._init_train(lr)
-        self._init_wandb(project, wandb_enabled)
-        self.x_paths = list()
-        self.ys = None
-        if min_lr is None:
-            min_lr = lr * 0.001
-
-        for round in range(n_rounds):
-            self._init_scheduler(min_lr, decay_type=decay_type)
-            self.round = round
-            print('\nRound: {}'.format(round))
-            thetas = self._draw_params(x, n_per_round, y_file if round == 0 else None)
-            x_path = self.simulate(thetas, x_file if round == 0 else None)
-            np.save(os.path.join(self.directory, str(round)) + '_x.npy', x_path)
-            np.save(os.path.join(self.directory, str(round)) + '_y.npy', thetas)
-            self.x_paths.extend(x_path)
-            # if self.ys is None:
-            #     self.ys = thetas
-            # else:
-            #     self.ys = np.concatenate([self.ys, thetas], axis=0)
-            data_container = BaseContainer(x_path, thetas, f_test=0, f_val=f_val, process=self.process)
-            self._init_loader(data_container, train_batch, val_batch)
-            if round == 0:
-                self._init_scales()
-            for epoch in range(n_epochs):
-                print('\nEpoch: {}'.format(epoch))
-                self._train_step()
-                self._step_scheduler()
-                # self._validate_step()
-                if self.wandb:
-                    wandb.log({"Train Loss": self.training_losses[-1], "Val Loss": self.validation_losses[-1]})
-                self.epoch = epoch
-            self.epoch=0
-            self.corner(x, n=100000, y=y)
-            loglike = self.log_prob(x, y)
-            if self.wandb:
-                wandb.log({"loglike": loglike})
-            print(loglike)
+    def log_like(self, obs, x, y):
+        values = list()
+        for i in range(len(x)):
+            values.append(self.like(obs, x[i], y[i]))
+        return np.array(values)
 
     def log_prob(self, x, y):
-        if len(x.shape) == 1:
-            x = x[None, None, :]
-        else:
-            x = x[None, :]
+        if self.round == 0:
+            return self.log_prior(y)
+
         x = self.scale_x(x)
-        y = self.scale_y(y[None, :])
+        y = self.scale_y(y)
+
         x = torch.from_numpy(x).type(self.dtype)
         y = torch.from_numpy(y).type(self.dtype)
         with torch.no_grad():
-            log_prob = self.network(x, y).cpu().numpy()[0] * -1
+            # it appears that DataParallal doesn't work properly here
+            log_prob = self.network.module(x, y).cpu().numpy()[:,0] * -1
         return log_prob
 
-    def corner(self, x, n, color='k', y=None, plot_datapoints=False, plot_density=False, range_=0.95, truth_color='r', seed=0):
-        range_ = [range_] * self.ndim
-        if len(x.shape) == 1:
-            x = x[None, None, :]
-        else:
-            x = x[None, :]
-        sample = self.infer(x)
-        figure = corner.corner(sample,
-                               truths=y,
-                               color=color,
-                               plot_datapoints=plot_datapoints,
-                               range=range_,
-                               plot_density=plot_density,
-                               truth_color=truth_color,
-                               **corner_kwargs)
+    def corner(
+            self,
+            x,
+            y=None,
+            weights=None,
+            color='k',
+            truth=None,
+            plot_datapoints=True,
+            plot_density=False,
+            range_=None,
+            truth_color='r',
+            n=5000
+    ):
+
+        if range_ is not None:
+            range_ = [range_] * self.ndim
+        if y is None:
+            y = self.infer(x, n)
+        corner.corner(y,
+                       truths=truth,
+                       color=color,
+                       plot_datapoints=plot_datapoints,
+                       range=range_,
+                       plot_density=plot_density,
+                       truth_color=truth_color,
+                       weights=weights,
+                       **corner_kwargs)
         plt.show()
