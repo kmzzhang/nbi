@@ -552,7 +552,11 @@ class NBI:
             return self.draw_prior(n)
         else:
             params = self.infer(x, n)
-            # logprior = self.log_prior(params)
+            logprior = self.log_prior(params)
+            if np.isinf(logprior).any():
+                print('Num sample outside prior:', np.isinf(logprior).sum())
+                params = params[not np.isinf(logprior)]
+                print(params.shape)
             # if np.isinf(logprior).any():
                 # f_reject = np.isinf(logprior).sum() / n
                 # more_params = self.infer(x, int(n * f_reject / (1 - f_reject)))
