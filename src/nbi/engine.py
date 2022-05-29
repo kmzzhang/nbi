@@ -266,7 +266,7 @@ class NBI:
         if self.round > 0:
             self.weighted_corner(obs, y_true)
 
-        if self.log_like is not None:
+        if self.like is not None:
             neff = 1 / (weights ** 2).sum() - 1
             self.neff.append(neff)
             print('Effective sample size for this round', '%.1f' % neff)
