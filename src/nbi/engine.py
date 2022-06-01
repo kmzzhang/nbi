@@ -133,8 +133,8 @@ class NBI:
     def run(
             self,
             obs,
-            n_rounds,
             n_per_round,
+            n_rounds=1,
             n_epochs=100,
             n_reuse=0,
             y_true=None,
@@ -190,13 +190,16 @@ class NBI:
                 if self.stop_training(early_stop_patience):
                     print('early stopping, loading state dict from epoch', self.epoch - early_stop_patience - 2)
                     self.load_state_dict(self.epoch - early_stop_patience - 2)
-                    self.save_current_state()
                     break
                 if debug:
-                    ys = self.infer(obs, n_per_round)
+                    ys = self.sample(obs, n_per_round)
                     self.corner(obs, ys, truth=y_true)
 
             self.save_current_state()
+
+            if obs is None:
+                self.round += 1
+                return
 
             self.round += 1
             self.prepare_data(obs, n_per_round, y_true)
@@ -224,8 +227,8 @@ class NBI:
                     self.corner_all(obs, y_true)
                     return
 
-        self.corner_all(obs, y_true)
-        return
+        if obs is not None:
+            self.corner_all(obs, y_true)
 
     def save_current_state(self):
         self.prev_state = self.get_state_dict()
@@ -266,7 +269,7 @@ class NBI:
         if self.round > 0:
             self.weighted_corner(obs, y_true)
 
-        if self.like is not None:
+        if self.like is not None and obs is not None:
             neff = 1 / (weights ** 2).sum() - 1
             self.neff.append(neff)
             print('Effective sample size for this round', '%.1f' % neff)
@@ -318,7 +321,7 @@ class NBI:
             return x_round, y_round
 
     def importance_reweight(self, obs, x, y):
-        if self.like is None:
+        if self.like is None or obs is None:
             return None
 
         loglike = self.log_like(obs, x, y)
@@ -386,7 +389,48 @@ class NBI:
                 x = np.expand_dims(x, axis=list(range(3 - len(x.shape))))
             return (x - self.x_mean) / self.x_std
 
-    def infer(self, x, n=5000):
+    def infer(self, obs, neff_target, y_true=None, corner_before=False, corner_after=False):
+
+        ys = self._draw_params(obs, neff_target)
+
+        if corner_before:
+            print('surrogate posterior')
+            self.corner(obs, ys, truth=y_true)
+
+        x_path, good = self.simulate(ys)
+        x_path = x_path[good]
+        ys = ys[good]
+        weights = self.importance_reweight(obs, x_path, ys)
+
+        neff = 1 / (weights ** 2).sum() - 1
+        print('Initial effective sample size N =', '%.1f' % neff)
+
+        f_accept = neff / neff_target
+        if f_accept < 0.005:
+            print('failed: acceptance rate < 0.5%')
+            return ys, weights, neff
+
+        n_required = int(neff_target * (1 / f_accept - 1))
+        print('Requires N =', n_required, 'more simulations')
+
+        ys_extra = self._draw_params(obs, n_required)
+        x_path, good = self.simulate(ys_extra)
+        x_path = x_path[good]
+        ys_extra = ys_extra[good]
+        weights_extra = self.importance_reweight(obs, x_path, ys_extra)
+
+        neff_extra = 1 / (weights_extra ** 2).sum() - 1
+        print('Total effective sample size N =', '%.1f' % (neff + neff_extra))
+
+        ys = np.concatenate([ys, ys_extra])
+        weights = np.concatenate([weights, weights_extra])
+
+        if corner_after:
+            self.corner(obs, ys, truth=y_true, weights=weights)
+
+        return ys, weights
+
+    def sample(self, x, y=None, n=5000, corner=False):
         x = self.scale_x(x)
         x = torch.from_numpy(x).type(self.dtype)
         with torch.no_grad():
@@ -397,7 +441,10 @@ class NBI:
                 s = np.concatenate(s)[:n]
             else:
                 s = self.get_network()(x, n=n, sample=True).cpu().numpy()
-        return self.scale_y(s, back=True)[0]
+        samples = self.scale_y(s, back=True)[0]
+        if corner:
+            self.corner(x, samples, truth=y)
+        return samples
 
     def simulate(self, thetas):
 
@@ -541,8 +588,6 @@ class NBI:
         self.train_loader = DataLoader(train_container, batch_size=train_batch, shuffle=True, **kwargs)
         self.valid_loader = DataLoader(val_container, batch_size=val_batch, **kwargs)
 
-        # if self.round == 0:
-        # reset network every round --> also reset scales
         self._init_scales()
 
     def _draw_params(self, x, n):
@@ -551,15 +596,11 @@ class NBI:
         elif self.round == 0:
             return self.draw_prior(n)
         else:
-            params = self.infer(x, n)
+            params = self.sample(x, n=n)
             logprior = self.log_prior(params)
             if np.isinf(logprior).any():
-                print('Num sample outside prior:', np.isinf(logprior).sum())
-                params = params[not np.isinf(logprior)]
-                print(params.shape)
-            # if np.isinf(logprior).any():
-                # f_reject = np.isinf(logprior).sum() / n
-                # more_params = self.infer(x, int(n * f_reject / (1 - f_reject)))
+                print('Samples outside prior N =', np.isinf(logprior).sum())
+                params = params[~np.isinf(logprior)]
             return params
 
     def _init_scales(self):
@@ -627,7 +668,7 @@ class NBI:
         if range_ is not None:
             range_ = [range_] * self.ndim
         if y is None:
-            y = self.infer(x, n)
+            y = self.sample(x, n)
         corner.corner(y,
                        truths=truth,
                        color=color,

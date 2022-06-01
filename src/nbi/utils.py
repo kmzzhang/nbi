@@ -24,3 +24,5 @@ def parallel_simulate(args):
         mask.append(not np.isnan(simulation).any() and not np.isinf(simulation).any())
 
     return mask
+
+# def parallel_log_like(args):
