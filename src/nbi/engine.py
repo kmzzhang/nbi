@@ -366,10 +366,15 @@ class NBI:
         self.get_network().load_state_dict(torch.load(path, map_location=self.map_location))
 
     def load_checkpoint(self, network, x_scale, y_scale):
-        self.x_mean = x_scale[:, 0]
-        self.x_std = x_scale[:, 1]
-        self.y_mean = y_scale[:, 0]
-        self.y_std = y_scale[:, 1]
+        if type(x_scale) == str:
+            x_scale = np.load(x_scale)
+        if type(y_scale) == str:
+            y_scale = np.load(y_scale)
+
+        self.x_mean = x_scale[0]
+        self.x_std = x_scale[1]
+        self.y_mean = y_scale[0]
+        self.y_std = y_scale[1]
         self.get_network().load_state_dict(torch.load(network, map_location=self.map_location))
 
     def save_state_dict(self):
@@ -379,8 +384,8 @@ class NBI:
 
         path_xscales = os.path.join(path_round, 'x_scales.npy')
         path_yscales = os.path.join(path_round, 'y_scales.npy')
-        np.save(path_xscales, np.c_[self.x_mean, self.x_std])
-        np.save(path_yscales, np.c_[self.y_mean, self.y_std])
+        np.save(path_xscales, np.array([self.x_mean, self.x_std]))
+        np.save(path_yscales, np.array([self.y_mean, self.y_std]))
 
     def scale_y(self, y, back=False):
         if back:
