@@ -52,6 +52,7 @@ class NBI:
             parallel=False,
             directory='',
             n_jobs=1,
+            n_jobs_loader=1,
             modify_scales=None,
             labels=None
     ):
@@ -106,6 +107,7 @@ class NBI:
         self.process = instrumental
         self.directory = directory
         self.n_jobs = n_jobs
+        self.n_jobs_loader = n_jobs_loader
 
         self.round = 0
         self.early_stop_count = 0
@@ -582,7 +584,7 @@ class NBI:
         test_container \
             = data_container.get_splits()
 
-        kwargs = {'num_workers': 8 if torch.cuda.is_available() else 1, 'pin_memory': False, 'drop_last': True}
+        kwargs = {'num_workers': self.n_jobs_loader, 'pin_memory': False, 'drop_last': True}
 
         self.train_loader = DataLoader(train_container, batch_size=train_batch, shuffle=True, **kwargs)
         self.valid_loader = DataLoader(val_container, batch_size=val_batch, **kwargs)
