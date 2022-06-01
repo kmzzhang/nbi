@@ -462,16 +462,15 @@ class NBI:
             n = len(thetas)
             paths = np.array([os.path.join(path_round, str(i)+'.npy') for i in range(n)])
             per_job = n // self.n_jobs
-            jobs = [[
-                thetas[i * per_job: (i + 1) * per_job],
-                paths[i * per_job: (i + 1) * per_job],
-                self.simulator
-            ] for i in range(self.n_jobs - 1)]
+            njobs = np.zeros(self.n_jobs) + per_job
+            njobs[np.arange(n % self.n_jobs)] += 1
+            njobs = np.array([njobs[:i].sum() for i in range(self.n_jobs + 1)], dtype=int)
 
-            jobs.append([
-                thetas[(self.n_jobs - 1) * per_job:],
-                paths[(self.n_jobs - 1) * per_job:],
-                self.simulator])
+            jobs = [[
+                thetas[njobs[i]: njobs[i + 1]],
+                paths[njobs[i]: njobs[i + 1]],
+                self.simulator
+            ] for i in range(self.n_jobs)]
 
             with Pool(self.n_jobs) as p:
                 masks = p.map(parallel_simulate, jobs)
