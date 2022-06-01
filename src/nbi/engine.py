@@ -360,20 +360,27 @@ class NBI:
     def get_state_dict(self):
         return self.get_network().state_dict()
 
-    # def load_state_dict(self, file, x_scale, y_scale):
     def load_state_dict(self, epoch):
         path_round = os.path.join(self.directory, str(self.round))
         path = os.path.join(path_round, str(epoch) + '.pth')
-        # self.x_mean = x_scale[:, 0]
-        # self.x_std = x_scale[:, 1]
-        # self.y_mean = y_scale[:, 0]
-        # self.y_std = y_scale[:, 1]
         self.get_network().load_state_dict(torch.load(path, map_location=self.map_location))
+
+    def load_checkpoint(self, network, x_scale, y_scale):
+        self.x_mean = x_scale[:, 0]
+        self.x_std = x_scale[:, 1]
+        self.y_mean = y_scale[:, 0]
+        self.y_std = y_scale[:, 1]
+        self.get_network().load_state_dict(torch.load(network, map_location=self.map_location))
 
     def save_state_dict(self):
         path_round = os.path.join(self.directory, str(self.round))
-        path = os.path.join(path_round, str(self.epoch) + '.pth')
-        torch.save(self.get_state_dict(), path)
+        path_network = os.path.join(path_round, str(self.epoch) + '.pth')
+        torch.save(self.get_state_dict(), path_network)
+
+        path_xscales = os.path.join(path_round, 'x_scales.npy')
+        path_yscales = os.path.join(path_round, 'y_scales.npy')
+        np.save(path_xscales, np.c_[self.x_mean, self.x_std])
+        np.save(path_yscales, np.c_[self.y_mean, self.y_std])
 
     def scale_y(self, y, back=False):
         if back:
@@ -393,6 +400,8 @@ class NBI:
 
     def infer(self, obs, neff_target, y_true=None, corner_before=False, corner_after=False):
 
+        if self.round == 0:
+            self.round = 1
         ys = self._draw_params(obs, neff_target)
 
         if corner_before:
@@ -407,12 +416,12 @@ class NBI:
         neff = 1 / (weights ** 2).sum() - 1
         print('Initial effective sample size N =', '%.1f' % neff)
 
-        f_accept = neff / len(weights)
+        f_accept = neff / neff_target
         if f_accept < 0.005:
             print('failed: acceptance rate < 0.5%')
             return ys, weights, neff
 
-        n_required = int(len(weights) * (1 / f_accept - 1))
+        n_required = int(neff_target * (1 / f_accept - 1))
         print('Requires N =', n_required, 'more simulations')
 
         ys_extra = self._draw_params(obs, n_required)
