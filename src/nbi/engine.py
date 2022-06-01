@@ -254,14 +254,14 @@ class NBI:
     def prepare_data(self, obs, n_per_round, y_true=None):
 
         ys = self._draw_params(obs, n_per_round)
-        np.save(os.path.join(self.directory, str(self.round)) + '_y.npy', ys)
 
         if self.round > 0:
             print('surrogate posterior')
             self.corner(obs, ys, truth=y_true)
 
         x_path, good = self.simulate(ys)
-        np.save(os.path.join(self.directory, str(self.round)) + '_x.npy', x_path)
+        np.save(os.path.join(self.directory, str(self.round)) + '_x.npy', x_path[good])
+        np.save(os.path.join(self.directory, str(self.round)) + '_y.npy', ys[good])
 
         self.add_round_data(x_path, ys, good)
 
@@ -407,12 +407,12 @@ class NBI:
         neff = 1 / (weights ** 2).sum() - 1
         print('Initial effective sample size N =', '%.1f' % neff)
 
-        f_accept = neff / neff_target
+        f_accept = neff / len(weights)
         if f_accept < 0.005:
             print('failed: acceptance rate < 0.5%')
             return ys, weights, neff
 
-        n_required = int(neff_target * (1 / f_accept - 1))
+        n_required = int(len(weights) * (1 / f_accept - 1))
         print('Requires N =', n_required, 'more simulations')
 
         ys_extra = self._draw_params(obs, n_required)
