@@ -254,6 +254,7 @@ class NBI:
     def prepare_data(self, obs, n_per_round, y_true=None):
 
         ys = self._draw_params(obs, n_per_round)
+        np.save(os.path.join(self.directory, str(self.round)) + '_y_all.npy', ys)
 
         if self.round > 0:
             print('surrogate posterior')
