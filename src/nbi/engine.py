@@ -400,6 +400,8 @@ class NBI:
         if back:
             return x * self.x_std + self.x_mean
         else:
+            # shape needs to be (N, D, L) for ResNet-GRU
+            # todo: make more generic
             if len(x.shape) != 3:
                 x = np.expand_dims(x, axis=list(range(3 - len(x.shape))))
             return (x - self.x_mean) / self.x_std
@@ -451,6 +453,7 @@ class NBI:
         x = self.scale_x(x)
         x = torch.from_numpy(x).type(self.dtype)
         with torch.no_grad():
+            # GPU memory control (make larger?)
             if n > 20000:
                 s = list()
                 for i in range(n // 20000 + 1):
@@ -607,10 +610,13 @@ class NBI:
         self._init_scales()
 
     def _draw_params(self, x, n):
-        if self.y_file is not None and self.round == 0:
-            return np.load(self.y_file)
-        elif self.round == 0:
-            return self.draw_prior(n)
+        # first round: precomputed data or draw from prior
+        if self.round == 0:
+            if self.y_file is not None:
+                return np.load(self.y_file)
+            else:
+                return self.draw_prior(n)
+        # 2+ round: sample from surrogate posterior
         else:
             params = self.sample(x, n=n)
             logprior = self.log_prior(params)
@@ -673,7 +679,7 @@ class NBI:
             y=None,
             weights=None,
             color='k',
-            truth=None,
+            y_true=None,
             plot_datapoints=True,
             plot_density=False,
             range_=None,
@@ -686,7 +692,7 @@ class NBI:
         if y is None:
             y = self.sample(x, n)
         corner.corner(y,
-                       truths=truth,
+                       truths=y_true,
                        color=color,
                        plot_datapoints=plot_datapoints,
                        range=range_,
