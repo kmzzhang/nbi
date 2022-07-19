@@ -165,7 +165,7 @@ class NBI:
         if min_lr is None:
             min_lr = lr * 0.001
 
-        self.prepare_data(obs, n_per_round)
+        self.prepare_data(obs, n_per_round, y_true=y_true)
 
         for i in range(n_rounds):
 
@@ -691,7 +691,7 @@ class NBI:
         if range_ is not None:
             range_ = [range_] * self.ndim
         if y is None:
-            y = self.sample(x, n)
+            y = self.sample(x, n=n)
         corner.corner(y,
                        truths=y_true,
                        color=color,
