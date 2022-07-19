@@ -91,3 +91,19 @@ def get_flow(featurizer, dim_theta, flow_hidden, num_cond_inputs, num_blocks=5,
 
     full_model = Flow(featurizer, flow)
     return full_model
+
+if __name__ == '__main__':
+    dim_param = 3
+
+    flow_config = {
+        'flow_hidden': 512,
+        'num_cond_inputs': 512,
+        'num_blocks': 20,
+        'perm_seed': 3,
+        'n_mog': 4
+    }
+
+    # nbi has different featurizers pre-defined
+    # light-curve problems: use resnetrnn
+    resnet = get_featurizer('resnetrnn', 1, 512, depth=6)
+    model = get_flow(resnet, dim_param, **flow_config)

@@ -165,7 +165,15 @@ class NBI:
         if min_lr is None:
             min_lr = lr * 0.001
 
-        self.prepare_data(obs, n_per_round, y_true=y_true)
+        """
+         restart training:
+          - len(self.x_all) == self.round + 1
+            - data already generated
+          - len(self.x_all) == self.round
+            - data not available
+        """
+        if len(self.x_all) == self.round:
+            self.prepare_data(obs, n_per_round, y_true=y_true)
 
         for i in range(n_rounds):
 
@@ -268,6 +276,7 @@ class NBI:
 
         weights = self.importance_reweight(obs, self.x_all[-1], self.y_all[-1])
         self.weights.append(weights)
+        np.save(os.path.join(self.directory, str(self.round)) + '_w.npy', weights[good])
 
         if self.round > 0:
             self.weighted_corner(obs, y_true)
@@ -293,9 +302,6 @@ class NBI:
         prev_losses = np.array(self.vloss[-1 * patience - 1:])
         base_loss = self.vloss[-1 * patience - 2]
         return (prev_losses > base_loss).all()
-
-    def revert_state(self):
-        self.get_network().load_state_dict(self.prev_state)
 
     def add_round_data(self, x, y, good):
 
@@ -649,7 +655,6 @@ class NBI:
 
     def log_prior(self, y):
         values = list()
-        return np.zeros(len(y))
         for i in range(len(y)):
             values.append(self.prior(y[i]))
         return np.array(values)
