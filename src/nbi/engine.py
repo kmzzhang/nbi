@@ -649,6 +649,7 @@ class NBI:
 
     def log_prior(self, y):
         values = list()
+        return np.zeros(len(y))
         for i in range(len(y)):
             values.append(self.prior(y[i]))
         return np.array(values)
