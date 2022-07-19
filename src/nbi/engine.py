@@ -195,7 +195,7 @@ class NBI:
                     break
                 if debug:
                     ys = self.sample(obs, n_per_round)
-                    self.corner(obs, ys, truth=y_true)
+                    self.corner(obs, ys, y_true=y_true)
 
             self.save_current_state()
 
@@ -249,7 +249,7 @@ class NBI:
     def corner_all(self, obs, y_true):
         print('reweighted posterior from all rounds')
         all_thetas, all_weights = self.result()
-        self.corner(obs, all_thetas, truth=y_true, weights=all_weights)
+        self.corner(obs, all_thetas, y_true=y_true, weights=all_weights)
 
     def prepare_data(self, obs, n_per_round, y_true=None):
 
@@ -258,7 +258,7 @@ class NBI:
 
         if self.round > 0:
             print('surrogate posterior')
-            self.corner(obs, ys, truth=y_true)
+            self.corner(obs, ys, y_true=y_true)
 
         x_path, good = self.simulate(ys)
         np.save(os.path.join(self.directory, str(self.round)) + '_x.npy', x_path[good])
@@ -281,7 +281,7 @@ class NBI:
     def weighted_corner(self, obs, y_true):
         try:
             print('reweighted posterior from current round')
-            self.corner(obs, self.y_all[-1], truth=y_true, weights=self.weights[-1])
+            self.corner(obs, self.y_all[-1], y_true=y_true, weights=self.weights[-1])
 
         except:
             print('corner plot failed')
@@ -414,7 +414,7 @@ class NBI:
 
         if corner_before:
             print('surrogate posterior')
-            self.corner(obs, ys, truth=y_true)
+            self.corner(obs, ys, y_true=y_true)
 
         x_path, good = self.simulate(ys)
         x_path = x_path[good]
@@ -445,7 +445,7 @@ class NBI:
         weights = np.concatenate([weights, weights_extra])
 
         if corner_after:
-            self.corner(obs, ys, truth=y_true, weights=weights)
+            self.corner(obs, ys, y_true=y_true, weights=weights)
 
         return ys, weights
 
@@ -463,7 +463,7 @@ class NBI:
                 s = self.get_network()(x, n=n, sample=True).cpu().numpy()
         samples = self.scale_y(s, back=True)[0]
         if corner:
-            self.corner(x, samples, truth=y)
+            self.corner(x, samples, y_true=y)
         return samples
 
     def simulate(self, thetas):
