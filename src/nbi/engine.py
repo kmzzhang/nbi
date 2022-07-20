@@ -560,7 +560,7 @@ class NBI:
         # pbar.close()
         val_loss = np.array(val_loss)
         val_loss = val_loss[val_loss < np.percentile(val_loss, 90)].mean()
-        pbar.set_description('Val, Log likelihood in nats: {:.6f}'.format(val_loss))
+        pbar.set_description('Val, Log likelihood in nats: {:.6f}'.format(-val_loss))
         self.vloss.append(val_loss)
 
     def _init_wandb(self, project, enable=True):
