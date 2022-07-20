@@ -276,7 +276,7 @@ class NBI:
 
         weights = self.importance_reweight(obs, self.x_all[-1], self.y_all[-1])
         self.weights.append(weights)
-        np.save(os.path.join(self.directory, str(self.round)) + '_w.npy', weights[good])
+        np.save(os.path.join(self.directory, str(self.round)) + '_w.npy', weights)
 
         if self.round > 0:
             self.weighted_corner(obs, y_true)
