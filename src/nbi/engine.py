@@ -191,7 +191,8 @@ class NBI:
                 print('\nEpoch: {}'.format(epoch))
                 self._train_step()
                 self._step_scheduler()
-                self._validate_step()
+                if f_val > 0:
+                    self._validate_step()
                 if self.wandb:
                     wandb.log({"Train Loss": self.training_losses[-1], "Val Loss": self.validation_losses[-1]})
 
