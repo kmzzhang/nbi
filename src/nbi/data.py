@@ -46,12 +46,18 @@ class BaseContainer(Dataset):
 
     def __getitem__(self, i, **kwargs):
         x, y = np.load(self.x[i]), self.y[i]
-        if self.process is not None:
-            x, y = self.process(x, y)
-        if len(x.shape) == 1:
-            return x[None, :], y
+        dat = self.process(x, y)
+
+        if len(dat) == 2:
+            x, y = dat
+            aux = None
         else:
-            return x, y
+            x, y, aux = dat
+
+        if len(x.shape) == 1:
+            x = x[None, :]
+
+        return x, y, aux
 
 class ContainerDemo(BaseContainer):
     def __init__(self, x, y, f_val=0.2, f_test=0, split='all',
