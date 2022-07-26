@@ -57,7 +57,10 @@ class BaseContainer(Dataset):
         if len(x.shape) == 1:
             x = x[None, :]
 
-        return x, y, aux
+        if aux is not None:
+            return x, y, aux
+        else:
+            return x, y
 
 class ContainerDemo(BaseContainer):
     def __init__(self, x, y, f_val=0.2, f_test=0, split='all',

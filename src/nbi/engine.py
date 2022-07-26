@@ -511,8 +511,11 @@ class NBI:
         train_loss = list()
         pbar = tqdm(total=len(self.train_loader.dataset))
         for batch_idx, data in enumerate(self.train_loader):
-            x, y, aux = data
-            if aux is not None:
+            if len(data) == 2:
+                x, y = data
+                aux = None
+            else:
+                x, y, aux = data
                 aux = aux.type(self.dtype)
             x = self.scale_x(x).type(self.dtype)
             y = self.scale_y(y).type(self.dtype)
