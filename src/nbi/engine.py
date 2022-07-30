@@ -42,6 +42,7 @@ class NBI:
             self,
             featurizer,
             dim_param,
+            dim_aux=0,
             physics=None,
             prior_sampler=None,
             log_prior=None,
@@ -92,6 +93,7 @@ class NBI:
         self.tloss = list()
         self.vloss = list()
 
+        self.dim_aux = dim_aux
         self.x_mean = None
         self.x_std = None
         self.y_mean = None
@@ -511,14 +513,16 @@ class NBI:
         train_loss = list()
         pbar = tqdm(total=len(self.train_loader.dataset))
         for batch_idx, data in enumerate(self.train_loader):
-            if len(data) == 2:
-                x, y = data
-                aux = None
-            else:
-                x, y, aux = data
-                aux = aux.type(self.dtype)
+            x, y = data
             x = self.scale_x(x).type(self.dtype)
             y = self.scale_y(y).type(self.dtype)
+
+            if self.dim_aux > 0:
+                aux = y[:, -self.dim_aux:]
+                y = y[:, :-self.dim_aux]
+            else:
+                aux = None
+
             self.optimizer.zero_grad()
             loss = self.network(x, y, aux=aux)
             loss = loss.mean()
@@ -549,10 +553,17 @@ class NBI:
             x, y = data
             x = self.scale_x(x).type(self.dtype)
             y = self.scale_y(y).type(self.dtype)
+
+            if self.dim_aux > 0:
+                aux = y[:, -self.dim_aux:]
+                y = y[:, :-self.dim_aux]
+            else:
+                aux = None
+
             objs += x.shape[0]
-            self.optimizer.zero_grad()
+            # self.optimizer.zero_grad()
             with torch.no_grad():
-                loss = self.network(x, y).mean()
+                loss = self.network(x, y, aux=aux).mean()
                 val_loss.append(loss.detach().cpu().numpy())
             pbar.update(x.shape[0])
             pbar.set_description('Val, Log likelihood in nats: {:.6f}'.format(
@@ -638,11 +649,7 @@ class NBI:
         y_list = list()
         n = 0
         for batch_idx, data in enumerate(self.train_loader):
-            if len(data) == 2:
-                x, y = data
-                aux = None
-            else:
-                x, y, aux = data
+            x, y = data
             x_list.append(x.cpu().numpy())
             y_list.append(y.cpu().numpy())
             n += x_list[-1].shape[0]
