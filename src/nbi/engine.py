@@ -405,6 +405,14 @@ class NBI:
                 y = np.expand_dims(y, axis=list(range(2 - len(y.shape))))
             return (y - self.y_mean) / self.y_std
 
+    def scale_aux(self, y, back=False):
+        if back:
+            return y * self.y_std[-self.dim_aux:] + self.y_mean[-self.dim_aux:]
+        else:
+            if len(y.shape) != 2:
+                y = np.expand_dims(y, axis=list(range(2 - len(y.shape))))
+            return (y - self.y_mean[-self.dim_aux:]) / self.y_std[-self.dim_aux:]
+
     def scale_x(self, x, back=False):
         if back:
             return x * self.x_std + self.x_mean
@@ -458,18 +466,21 @@ class NBI:
 
         return ys, weights
 
-    def sample(self, x, y=None, n=5000, corner=False):
+    def sample(self, x, y=None, aux=None, n=5000, corner=False):
         x = self.scale_x(x)
         x = torch.from_numpy(x).type(self.dtype)
+        if aux is not None:
+            aux = self.scale_aux(aux)
+            aux = torch.from_numpy(aux).type(self.dtype)
         with torch.no_grad():
             # GPU memory control (make larger?)
             if n > 20000:
                 s = list()
                 for i in range(n // 20000 + 1):
-                    s.append(self.get_network()(x, n=n, sample=True).cpu().numpy())
+                    s.append(self.get_network()(x, aux=aux, n=n, sample=True).cpu().numpy())
                 s = np.concatenate(s)[:n]
             else:
-                s = self.get_network()(x, n=n, sample=True).cpu().numpy()
+                s = self.get_network()(x, aux=aux, n=n, sample=True).cpu().numpy()
         samples = self.scale_y(s, back=True)[0]
         if corner:
             self.corner(x, samples, y_true=y)
