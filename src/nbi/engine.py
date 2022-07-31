@@ -407,11 +407,11 @@ class NBI:
 
     def scale_aux(self, y, back=False):
         if back:
-            return y * self.y_std[-self.dim_aux:] + self.y_mean[-self.dim_aux:]
+            return y * self.y_std[:, -self.dim_aux:] + self.y_mean[:, -self.dim_aux:]
         else:
             if len(y.shape) != 2:
                 y = np.expand_dims(y, axis=list(range(2 - len(y.shape))))
-            return (y - self.y_mean[-self.dim_aux:]) / self.y_std[-self.dim_aux:]
+            return (y - self.y_mean[:, -self.dim_aux:]) / self.y_std[:, -self.dim_aux:]
 
     def scale_x(self, x, back=False):
         if back:
