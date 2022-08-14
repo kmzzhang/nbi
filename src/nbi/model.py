@@ -31,7 +31,7 @@ class Flow(nn.Module):
         if sample:
             return self.flow.sample(num_samples=n, cond_inputs=cond_vector)
 
-        if reduce == 'apt':
+        if reduce == 'APT':
             y = y.repeat(B, 1, 1)  # B B D
             cond_vector = cond_vector.repeat(B, 1, 1)  # B B Dc
             print(y.shape, cond_vector.shape)
@@ -43,7 +43,7 @@ class Flow(nn.Module):
             print(neg_log_probs.shape)
             neg_log_probs = CELoss(neg_log_probs, labels)
 
-        elif reduce == 'sum':
+        elif reduce == 'NLL':
             neg_log_probs = -1 * self.flow.log_probs(y, cond_vector)
             neg_log_probs = neg_log_probs.sum(-1, keepdim=True) # B -1
         else:

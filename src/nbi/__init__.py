@@ -11,3 +11,5 @@ __all__ = [
     'NBI',
     'get_featurizer'
 ]
+
+__version__ = '0.0.0'

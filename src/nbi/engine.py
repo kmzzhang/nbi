@@ -55,7 +55,9 @@ class NBI:
             n_jobs=1,
             n_jobs_loader=1,
             modify_scales=None,
-            labels=None
+            labels=None,
+            loss='NLL',
+            loss_val='NLL'
     ):
         """
 
@@ -118,6 +120,8 @@ class NBI:
         self.weights = list()
         self.neff = list()
         self.state_dict_0 = self.get_state_dict()
+        self.loss = loss
+        self.loss_val = loss_val
 
         self.prev_state = None
         self.prev_x_mean = None
@@ -535,7 +539,7 @@ class NBI:
                 aux = None
 
             self.optimizer.zero_grad()
-            loss = self.network(x, y, aux=aux)
+            loss = self.network(x, y, aux=aux, reduce=self.loss)
             loss = loss.mean()
             train_loss.append(loss.item())
             loss.backward()
@@ -574,7 +578,7 @@ class NBI:
             objs += x.shape[0]
             # self.optimizer.zero_grad()
             with torch.no_grad():
-                loss = self.network(x, y, aux=aux).mean()
+                loss = self.network(x, y, aux=aux, reduce=self.loss_val).mean()
                 val_loss.append(loss.detach().cpu().numpy())
             pbar.update(x.shape[0])
             pbar.set_description('Val, Log likelihood in nats: {:.6f}'.format(
