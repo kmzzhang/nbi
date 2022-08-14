@@ -135,8 +135,8 @@ class MADEMOG(nn.Module):
 
         Parameters
         ----------
-        inputs: of shape [N, L] if direct
-                of shape [N, C, L]
+        inputs: of shape [B, D] or [B, B, D] if direct
+                of shape [B, M, D]
         cond_inputs: [N, C]
         mode
 
@@ -149,19 +149,22 @@ class MADEMOG(nn.Module):
             x = inputs
             y = cond_inputs
             # shapes
-            N, L = x.shape
-            C = self.n_components
-            m, loga, logr = self.net(self.net_input(x, y)).view(N, C, 3 * L).chunk(chunks=3, dim=-1)  # 3 x (N, C, L)
+            BB = x.shape[:-1]
+            D = x.shape[-1]
+            M = self.n_components
+
+            m, loga, logr = self.net(self.net_input(x, y)).view(*BB, M, 3 * D).chunk(chunks=3, dim=-1)  # 3 x (N, C, L)
             loga = torch.clamp(loga, self.clamp_0, self.clamp_1)
 
             # copy x into C components
-            x = x.repeat(1, C).view(N, C, L)  # out (N, C, L)
+            x = x.repeat(*torch.ones(len(BB), dtype=torch.int64), M).view(*BB, M, D)  # out (B, [B'], C, L)
             u = (x - m) * torch.exp(-loga)  # out (N, C, L)
             log_abs_det_jacobian = - loga  # out (N, C, L)
-            # normalize cluster responsibilities
-            self.logr = logr - logr.logsumexp(1, keepdim=True)  # out (N, C, L)
-            log_abs_det_jacobian += self.logr
 
+            # normalize cluster responsibilities
+            self.logr = logr - logr.logsumexp(-2, keepdim=True)  # out (N, C, L)
+            log_abs_det_jacobian += self.logr
+            print(u.shape, log_abs_det_jacobian.shape)
             return u, log_abs_det_jacobian
         else:
             u = inputs
@@ -320,30 +323,22 @@ class MADE2(nn.Module):
                                    nn.MaskedLinear(num_hidden, output_dims, output_mask))
 
     def forward(self, inputs, cond_inputs=None, mode='direct'):
+        """
+
+        :param inputs: [B, D] or [B, B', D]
+        :param cond_inputs: [B, C]
+        :param mode: direction of fow
+        :return: [B, B', D]
+        """
+        # print('input shape', inputs.shape)
         if mode == 'direct':
-            # print(inputs[0])
-            if self.shift_only:
-                h = self.joiner(inputs, cond_inputs)
-                m = self.trunk(h)
-                u = inputs - m
-                return u, torch.zeros_like(m).sum(-1, keepdim=True)
-            else:
-                h = self.joiner(inputs, cond_inputs)
-                m, a = self.trunk(h).chunk(2, -1)
-                a = torch.clamp(a, self.clamp_0, self.clamp_1)
-                if len(inputs.shape) == 3:
-                    a = a.unsqueeze(1)
-                    m = m.unsqueeze(1)
-                if self.linear_scale:
-                    u = (inputs - m) / a
-                    a[a < 0] = -a
-                    a = torch.log(a)
-                    return u, -a.sum(-1, keepdim=True)
-                else:
-                    u = (inputs - m) * torch.exp(-a)
-                    return u, -a
-                y = torch.exp(log_gamma) * inputs + beta
-                return y, log_gamma
+
+            h = self.joiner(inputs, cond_inputs)
+            m, a = self.trunk(h).chunk(2, -1)
+            a = torch.clamp(a, self.clamp_0, self.clamp_1)
+            u = (inputs - m) * torch.exp(-a)
+            print(u.shape, a.shape)
+            return u, -a
 
         else:
             x = torch.zeros_like(inputs)
@@ -664,27 +659,26 @@ class FlowSequentialMOG(nn.Sequential):
     def init(self, C):
         self.C = C
 
-    def forward(self, inputs, cond_inputs=None, mode='direct', logdets=None):
+    def forward(self, inputs, cond_inputs=None, mode='direct'):
         """ Performs a forward or backward pass for flow modules.
         Args:
             inputs: a tuple of inputs and logdets
             mode: to run direct computation or inverse
         """
-        print(cond_inputs.shape) # B C
-        print(inputs.shape)  # B B' D
-        # if len(inputs.shape) == 2:
-        #     inputs = inputs.unsqueeze(1)
+
+        # print(cond_inputs.shape) # [B C] or [B B' C]
+        # print(inputs.shape)  # [B D] or [B B' D]
         self.num_inputs = inputs.size(-1)
-        if logdets is None:
-            logdets = torch.zeros(inputs.size(0), self.C, self.num_inputs, device=inputs.device)
-        print(logdets.shape)  # B, M, D
+        # B B' M D
+        logdets = torch.zeros(*inputs.shape[:-1], self.C, self.num_inputs, device=inputs.device)
+        # print(logdets.shape)  # B, M, D
         assert mode in ['direct', 'inverse']
         if mode == 'direct':
             for module in self._modules.values():
                 inputs, logdet = module(inputs, cond_inputs, mode)
-                print(logdet.shape) # B B' 1
-                if len(logdet.shape) == 2:
-                    logdet = logdet.unsqueeze(1)
+                # print(logdet.shape) # B B' 1
+                if len(logdet.shape) != len(logdets.shape):
+                    logdet = logdet.unsqueeze(-2)
                 logdets += logdet
         else:
             for module in reversed(self._modules.values()):
@@ -692,14 +686,14 @@ class FlowSequentialMOG(nn.Sequential):
         return inputs, logdets
 
     def log_probs(self, inputs, cond_inputs=None):
-        # inputs [B, D] cond_inputs [B, C]
-        print(inputs.shape, cond_inputs.shape)
+        # inputs [B, [B'], D] cond_inputs [B, [B'], C]
+        # print(inputs.shape, cond_inputs.shape)
         u, log_jacob = self(inputs, cond_inputs)  # [B, M, D]
-        print(u.shape, log_jacob.shape)
+        # print(u.shape, log_jacob.shape)
         self.u = u
         log_probs = (-0.5 * u.pow(2) - 0.5 * math.log(2 * math.pi))  # [B, M, D]
-        probs = torch.logsumexp(log_probs + log_jacob, dim=1)  # [B, D]
-        print(probs.shape)
+        probs = torch.logsumexp(log_probs + log_jacob, dim=-2)  # [B, D]
+        # print(probs.shape)
         return probs
 
     def sample(self, num_samples=None, noise=None, cond_inputs=None):

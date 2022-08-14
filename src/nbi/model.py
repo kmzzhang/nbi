@@ -4,6 +4,7 @@ import torch
 import numpy as np
 from nbi.nn import flows, ResNetRNN, ResNetLinear, RNN
 
+CELoss = nn.CrossEntropyLoss()
 
 class DataParallelFlow(nn.DataParallel):
     def __init__(self, *args, **kwargs):
@@ -23,27 +24,32 @@ class Flow(nn.Module):
         self.featurizer = featurizer
         self.flow = model
 
-    def forward(self, x, y=None, is_feature=False, reduce=True, return_entropy=False, n_entropy=10, n=1000, aux=None, sample=False):
+    def forward(self, x, y=None, reduce='sum', n=1000, aux=None, sample=False):
+        B = x.shape[0]
+        cond_vector = self.featurizer(x, aux)
+
         if sample:
-            if not is_feature:
-                cond_vector = self.featurizer(x, aux)
-            else:
-                cond_vector = x
             return self.flow.sample(num_samples=n, cond_inputs=cond_vector)
 
-        if not is_feature:
-            cond_vector = self.featurizer(x, aux)
+        if reduce == 'apt':
+            y = y.repeat(B, 1, 1)  # B B D
+            cond_vector = cond_vector.repeat(B, 1, 1)  # B B Dc
+            print(y.shape, cond_vector.shape)
+            neg_log_probs = -1 * self.flow.log_probs(y, cond_vector)  # B B D
+            print(neg_log_probs.shape)
+            neg_log_probs = neg_log_probs.sum(-1) # B B
+
+            labels = torch.arange(B).to(neg_log_probs.device)
+            print(neg_log_probs.shape)
+            neg_log_probs = CELoss(neg_log_probs, labels)
+
+        elif reduce == 'sum':
+            neg_log_probs = -1 * self.flow.log_probs(y, cond_vector)
+            neg_log_probs = neg_log_probs.sum(-1, keepdim=True) # B -1
         else:
-            cond_vector = x
-        self.cond_vector = cond_vector
-        neg_log_probs = -1 * self.flow.log_probs(y, cond_vector)
-        if reduce:
-            neg_log_probs = neg_log_probs.sum(-1, keepdim=True)
-        if not return_entropy:
-            return neg_log_probs
-        else:
-            entropy = self.flow.entropy(num_samples=n_entropy, cond_inputs=cond_vector)
-            return neg_log_probs, entropy
+            neg_log_probs = -1 * self.flow.log_probs(y, cond_vector)
+
+        return neg_log_probs
 
 
 def get_featurizer(featurizer_type, raw_dim, num_cond_inputs, depth=9, resnet_layer=2,
@@ -106,17 +112,23 @@ if __name__ == '__main__':
         'n_mog': 4
     }
 
-    # nbi has different featurizers pre-defined
-    # light-curve problems: use resnetrnn
     resnet = get_featurizer('resnetrnn', 2, 512, depth=2)
     model = get_flow(resnet, dim_param, **flow_config)
 
+    flow = model.flow
+
     # B, C, L
-    x = np.random.normal(0, 1, (7 ,2, 15))
-    x = from_numpy(x).type(torch.FloatTensor)
+    # f = np.random.normal(0, 1, (7, 512))
+    # f = from_numpy(f).type(torch.FloatTensor)
 
     # B, B + 1, D
-    y = np.random.normal(0, 1, (7, 8, 3))
+    y = np.random.normal(0, 1, (7, 3))
     y = from_numpy(y).type(torch.FloatTensor)
-    loss = model(x, y)
-    print(loss.shape)
+    # loss = flow(y, cond_inputs=f)
+    # print(loss[0].shape)
+
+    # B, C, L
+    x = np.random.normal(0, 1, (7, 2, 15))
+    x = from_numpy(x).type(torch.FloatTensor)
+    loss = model(x, y, reduce='apt')
+    print(loss.mean().shape)
