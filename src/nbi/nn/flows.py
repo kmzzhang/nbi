@@ -670,14 +670,19 @@ class FlowSequentialMOG(nn.Sequential):
             inputs: a tuple of inputs and logdets
             mode: to run direct computation or inverse
         """
-        self.num_inputs = inputs.size(-1) # N C L / N L
+        print(cond_inputs.shape) # B C
+        print(inputs.shape)  # B B' D
+        # if len(inputs.shape) == 2:
+        #     inputs = inputs.unsqueeze(1)
+        self.num_inputs = inputs.size(-1)
         if logdets is None:
             logdets = torch.zeros(inputs.size(0), self.C, self.num_inputs, device=inputs.device)
-
+        print(logdets.shape)  # B, M, D
         assert mode in ['direct', 'inverse']
         if mode == 'direct':
             for module in self._modules.values():
                 inputs, logdet = module(inputs, cond_inputs, mode)
+                print(logdet.shape) # B B' 1
                 if len(logdet.shape) == 2:
                     logdet = logdet.unsqueeze(1)
                 logdets += logdet
@@ -687,10 +692,14 @@ class FlowSequentialMOG(nn.Sequential):
         return inputs, logdets
 
     def log_probs(self, inputs, cond_inputs=None):
-        u, log_jacob = self(inputs, cond_inputs)  # [N, C, L] [N, C, L]
+        # inputs [B, D] cond_inputs [B, C]
+        print(inputs.shape, cond_inputs.shape)
+        u, log_jacob = self(inputs, cond_inputs)  # [B, M, D]
+        print(u.shape, log_jacob.shape)
         self.u = u
-        log_probs = (-0.5 * u.pow(2) - 0.5 * math.log(2 * math.pi))  # [N, C, L]
-        probs = torch.logsumexp(log_probs + log_jacob, dim=1)
+        log_probs = (-0.5 * u.pow(2) - 0.5 * math.log(2 * math.pi))  # [B, M, D]
+        probs = torch.logsumexp(log_probs + log_jacob, dim=1)  # [B, D]
+        print(probs.shape)
         return probs
 
     def sample(self, num_samples=None, noise=None, cond_inputs=None):

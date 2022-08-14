@@ -1,5 +1,8 @@
 import torch.nn as nn
-from .nn import flows, ResNetRNN, ResNetLinear, RNN
+from torch import from_numpy
+import torch
+import numpy as np
+from nbi.nn import flows, ResNetRNN, ResNetLinear, RNN
 
 
 class DataParallelFlow(nn.DataParallel):
@@ -105,5 +108,15 @@ if __name__ == '__main__':
 
     # nbi has different featurizers pre-defined
     # light-curve problems: use resnetrnn
-    resnet = get_featurizer('resnetrnn', 1, 512, depth=6)
+    resnet = get_featurizer('resnetrnn', 2, 512, depth=2)
     model = get_flow(resnet, dim_param, **flow_config)
+
+    # B, C, L
+    x = np.random.normal(0, 1, (7 ,2, 15))
+    x = from_numpy(x).type(torch.FloatTensor)
+
+    # B, B + 1, D
+    y = np.random.normal(0, 1, (7, 8, 3))
+    y = from_numpy(y).type(torch.FloatTensor)
+    loss = model(x, y)
+    print(loss.shape)
