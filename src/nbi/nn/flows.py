@@ -164,7 +164,7 @@ class MADEMOG(nn.Module):
             # normalize cluster responsibilities
             self.logr = logr - logr.logsumexp(-2, keepdim=True)  # out (N, C, L)
             log_abs_det_jacobian += self.logr
-            print(u.shape, log_abs_det_jacobian.shape)
+            # print(u.shape, log_abs_det_jacobian.shape)
             return u, log_abs_det_jacobian
         else:
             u = inputs
@@ -337,7 +337,7 @@ class MADE2(nn.Module):
             m, a = self.trunk(h).chunk(2, -1)
             a = torch.clamp(a, self.clamp_0, self.clamp_1)
             u = (inputs - m) * torch.exp(-a)
-            print(u.shape, a.shape)
+            # print(u.shape, a.shape)
             return u, -a
 
         else:
@@ -489,6 +489,7 @@ class Shuffle(nn.Module):
         self.inv_perm = np.argsort(self.perm)
 
     def forward(self, inputs, cond_inputs=None, mode='direct'):
+
         if mode == 'direct':
             inputs = torch.transpose(inputs, 0, -1)[self.perm]
             inputs = torch.transpose(inputs, 0, -1)

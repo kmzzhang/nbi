@@ -34,13 +34,13 @@ class Flow(nn.Module):
         if reduce == 'APT':
             y = y.repeat(B, 1, 1)  # B B D
             cond_vector = cond_vector.repeat(B, 1, 1)  # B B Dc
-            print(y.shape, cond_vector.shape)
+            # print(y.shape, cond_vector.shape)
             neg_log_probs = -1 * self.flow.log_probs(y, cond_vector)  # B B D
-            print(neg_log_probs.shape)
+            # print(neg_log_probs.shape)
             neg_log_probs = neg_log_probs.sum(-1) # B B
 
             labels = torch.arange(B).to(neg_log_probs.device)
-            print(neg_log_probs.shape)
+            # print(neg_log_probs.shape)
             neg_log_probs = CELoss(neg_log_probs, labels)
 
         elif reduce == 'NLL':
