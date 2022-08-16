@@ -150,14 +150,14 @@ class MADEMOG(nn.Module):
             y = cond_inputs
             # shapes
             BB = x.shape[:-1]
-            D = x.shape[-1]
+            dim = x.shape[-1]
             M = self.n_components
 
-            m, loga, logr = self.net(self.net_input(x, y)).view(*BB, M, 3 * D).chunk(chunks=3, dim=-1)  # 3 x (N, C, L)
+            m, loga, logr = self.net(self.net_input(x, y)).view(*BB, M, 3 * dim).chunk(chunks=3, dim=-1)  # 3 x (N, C, L)
             loga = torch.clamp(loga, self.clamp_0, self.clamp_1)
 
             # copy x into C components
-            x = x.repeat(*torch.ones(len(BB), dtype=torch.int64), M).view(*BB, M, D)  # out (B, [B'], C, L)
+            x = x.repeat(*torch.ones(len(BB), dtype=torch.int64), M).view(*BB, M, dim)  # out (B, [B'], C, L)
             u = (x - m) * torch.exp(-loga)  # out (N, C, L)
             log_abs_det_jacobian = - loga  # out (N, C, L)
 
