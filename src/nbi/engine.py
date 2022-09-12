@@ -100,6 +100,8 @@ class NBI:
         self.x_std = None
         self.y_mean = None
         self.y_std = None
+        self.aux_mean = None
+        self.aux_std = None
         self.norm = list()
 
         self.modify_scales = modify_scales
@@ -403,7 +405,7 @@ class NBI:
 
     def scale_y(self, y, back=False):
         if back:
-            return y * self.y_std[:, :-self.dim_aux] + self.y_mean[:, :-self.dim_aux]
+            return y * self.y_std + self.y_mean
         else:
             if len(y.shape) != 2:
                 y = np.expand_dims(y, axis=list(range(2 - len(y.shape))))
@@ -411,11 +413,11 @@ class NBI:
 
     def scale_aux(self, y, back=False):
         if back:
-            return y * self.y_std[:, -self.dim_aux:] + self.y_mean[:, -self.dim_aux:]
+            return y * self.aux_std + self.aux_mean
         else:
             if len(y.shape) != 2:
                 y = np.expand_dims(y, axis=list(range(2 - len(y.shape))))
-            return (y - self.y_mean[:, -self.dim_aux:]) / self.y_std[:, -self.dim_aux:]
+            return (y - self.aux_mean) / self.aux_std
 
     def scale_x(self, x, back=False):
         if back:
@@ -676,6 +678,13 @@ class NBI:
         self.x_std = x_list.mean(0).std(-1, keepdims=True)
         self.y_mean = y_list.mean(0, keepdims=True)
         self.y_std = y_list.std(0, keepdims=True)
+
+        if self.dim_aux > 0:
+            self.y_mean = self.y_mean[:,:-self.dim_aux]
+            self.y_std = self.y_std[:, :-self.dim_aux]
+
+            self.aux_mean = self.y_mean[:, :-self.dim_aux]
+            self.aux_std = self.y_std[:, :-self.dim_aux]
 
     def log_prior(self, y):
         values = list()
