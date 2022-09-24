@@ -694,8 +694,6 @@ class NBI:
             n=5000
     ):
 
-        if range_ is not None:
-            range_ = [range_] * self.ndim
         if y is None:
             y = self.sample(x, n=n)
         corner.corner(y,
