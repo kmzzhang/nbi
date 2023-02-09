@@ -12,7 +12,9 @@ INSTALL_REQUIRES = [
     "joblib",
     "pytest",
     "tqdm",
-    'wandb'
+    'wandb',
+    'multiprocess',
+    'ipywidgets'
 ]
 
 setup(

@@ -8,8 +8,9 @@ import copy
 import numpy as np
 import matplotlib.pyplot as plt
 import wandb
-from multiprocessing import Pool
-from tqdm import tqdm_notebook as tqdm
+from multiprocess import Pool
+from tqdm import tqdm
+from tqdm.notebook import tqdm as tqdmn
 
 import torch
 import torch.optim as optim
@@ -52,9 +53,10 @@ class NBI:
             parallel=False,
             directory='',
             n_jobs=1,
-            n_jobs_loader=1,
+            n_jobs_loader=0,
             modify_scales=None,
-            labels=None
+            labels=None,
+            tqdm_notebook=False
     ):
         """
 
@@ -127,6 +129,11 @@ class NBI:
             os.mkdir(self.directory)
         except:
             pass
+
+        if tqdm_notebook:
+            self.tqdm = tqdmn
+        else:
+            self.tqdm = tqdm
 
     def train(self, *args, **kwargs):
         # deprecated
@@ -428,12 +435,13 @@ class NBI:
         weights = self.importance_reweight(obs, x_path, ys)
 
         neff = 1 / (weights ** 2).sum() - 1
-        print('Initial effective sample size N =', '%.1f' % neff)
+        # print('Initial effective sample size N =', '%.1f' % neff)
 
         f_accept = neff / neff_target
         if f_accept < 0.005:
-            print('failed: acceptance rate < 0.5%')
+            print('failed: sampling efficiency < 0.5%')
             return ys, weights, neff
+        print('Sampling efficiency = %.1f' % f_accept)
 
         n_required = int(neff_target * (1 / f_accept - 1))
         print('Requires N =', n_required, 'more simulations')
@@ -508,7 +516,7 @@ class NBI:
         np.random.seed(self.epoch)
         self.network.train()
         train_loss = list()
-        pbar = tqdm(total=len(self.train_loader.dataset))
+        pbar = self.tqdm(total=len(self.train_loader.dataset))
         for batch_idx, data in enumerate(self.train_loader):
             if len(data) == 2:
                 x, y = data
@@ -541,7 +549,7 @@ class NBI:
         np.random.seed(0)
         self.network.eval()
         val_loss = list()
-        pbar = tqdm(total=len(self.valid_loader.dataset))
+        pbar = self.tqdm(total=len(self.valid_loader.dataset))
         pbar.set_description('Eval')
         objs = 0
         for batch_idx, data in enumerate(self.valid_loader):

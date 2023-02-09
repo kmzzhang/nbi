@@ -1,5 +1,5 @@
 import numpy as np
-from tqdm import tqdm_notebook as tqdm
+from tqdm import tqdm
 
 
 def parallel_simulate(args):
