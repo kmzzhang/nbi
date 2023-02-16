@@ -4,7 +4,7 @@ from .model import get_featurizer
 
 __author__ = "Keming Zhang"
 __email__ = "kemingz@berkeley.edu"
-__license__ = "MIT"
+__license__ = "BSD-3"
 __description__ = "Neural Bayesian Inference"
 
 __all__ = [
