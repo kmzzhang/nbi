@@ -1,6 +1,7 @@
+[![License](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause) ![PyPI](https://img.shields.io/pypi/v/nbi)
+
 nbi - Neural Bayesian Inference
 ====
-
 
 Installation
 ======
@@ -12,6 +13,7 @@ conda create -n nbi python=3.10
 conda activate nbi
 conda install pytorch torchvision torchaudio -c pytorch
 ```
+
 
 Then `pip` install this package from pypi
 
