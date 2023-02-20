@@ -14,10 +14,10 @@ def parallel_simulate(args):
     """
 
     thetas, paths, simulator = args
-    use_tqdm = '/0.npy' in paths[0]
+    use_tqdm = "/0.npy" in paths[0]
     mask = list()
     if use_tqdm:
-        print('Generating simulations')
+        print("Generating simulations")
     for i, params in tqdm(enumerate(thetas), disable=not use_tqdm):
         simulation = simulator(params)
         np.save(paths[i], simulation)
