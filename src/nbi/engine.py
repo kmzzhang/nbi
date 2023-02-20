@@ -1,13 +1,11 @@
-from .model import get_flow, DataParallelFlow
-from .data import BaseContainer
-from .utils import parallel_simulate
-
 import os
-import corner
 import copy
+
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+
+import corner
 import numpy as np
 import matplotlib.pyplot as plt
-import wandb
 from multiprocess import Pool
 from tqdm import tqdm
 from tqdm.notebook import tqdm as tqdmn
@@ -18,13 +16,17 @@ import torch.utils.data
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau, MultiStepLR, CosineAnnealingWarmRestarts
 
-os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+from .model import get_flow, DataParallelFlow
+from .data import BaseContainer
+from .utils import parallel_simulate
 
-corner_kwargs = {'quantiles': [0.16, 0.5, 0.84],
-                 'show_titles': True,
-                 'title_kwargs': {"fontsize": 16},
-                 'fill_contours': True,
-                 'levels': 1.0 - np.exp(-0.5 * np.arange(0.5, 2.6, 0.5) ** 2)}
+corner_kwargs = {
+    'quantiles': [0.16, 0.5, 0.84],
+    'show_titles': True,
+    'title_kwargs': {"fontsize": 16},
+    'fill_contours': True,
+    'levels': 1.0 - np.exp(-0.5 * np.arange(0.5, 2.6, 0.5) ** 2)
+}
 
 default_flow_config = {
     'flow_hidden': 256,
@@ -33,7 +35,6 @@ default_flow_config = {
     'perm_seed': 3,
     'n_mog': 8
 }
-
 
 class NBI:
     """ Neural bayesian inference engine for astronomical data
@@ -571,9 +572,15 @@ class NBI:
         pbar.set_description('Val, Log likelihood in nats: {:.6f}'.format(-val_loss))
         self.vloss.append(val_loss)
 
-    def _init_wandb(self, project, enable=True):
+    def _init_wandb(self, project, enable):
         self.wandb = enable
         if enable:
+            try:
+                import wandb
+            except ModuleNotFoundError:
+                print('weights & biases not installed')
+                self.wandb = False
+                return
             wandb.init(project=project, config=self.args, name=self.name)
             wandb.watch(self.network)
 
