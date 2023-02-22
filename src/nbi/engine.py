@@ -34,11 +34,11 @@ corner_kwargs = {
 }
 
 default_flow_config = {
-    "flow_hidden": 256,
-    "num_cond_inputs": 256,
-    "num_blocks": 20,
+    "flow_hidden": 64,
+    "num_cond_inputs": 64,
+    "num_blocks": 10,
     "perm_seed": 3,
-    "n_mog": 8,
+    "n_mog": 1,
 }
 
 
@@ -56,7 +56,6 @@ class NBI:
         Y=None,
         flow_config={},
         idx_gpu=0,
-        parallel=False,
         directory="test",
         n_jobs=1,
         n_jobs_loader=0,
@@ -88,7 +87,7 @@ class NBI:
         # if labels is None and prior is None:
         #     raise AssertionError('Parameter name must be provided via labels when prior not supplied!')
         if type(prior) != list and Y is None:
-            raise AssertionError('Prior cannot be sampled, nor are samples provided')
+            raise AssertionError("Prior cannot be sampled, nor are samples provided")
         self.ndim = Y.shape[-1] if Y is not None else len(prior)
 
         self.init_env(idx_gpu)
@@ -99,12 +98,13 @@ class NBI:
         # if featurizer is not user provided pytorch module
         # generate featurizer network based on user specified type and hyperparameters
         if type(featurizer) == dict:
-            featurizer['dim_out'] = flow_config_all['num_cond_inputs']
-            featurizer = get_featurizer(featurizer.pop('type'), featurizer)
+            featurizer["dim_out"] = flow_config_all["num_cond_inputs"]
+            featurizer = get_featurizer(featurizer.pop("type"), featurizer)
 
-        self.network = get_flow(featurizer, self.ndim, **flow_config_all).type(self.dtype)
-        if parallel:
-            self.network = DataParallelFlow(self.network)
+        self.network = get_flow(featurizer, self.ndim, **flow_config_all).type(
+            self.dtype
+        )
+        self.network = DataParallelFlow(self.network)
 
         self.epoch = 0
         self.prev_clip = 50000
@@ -462,10 +462,22 @@ class NBI:
             return (x - self.x_mean) / self.x_std
 
     def predict(
-        self, obs, neff_target, log_like=None, y_true=None, corner_before=False, corner_after=False
+        self,
+        obs,
+        neff_target,
+        x_err=None,
+        log_like=None,
+        y_true=None,
+        corner_before=False,
+        corner_after=False,
     ):
-        if log_like is not None:
-            self.like = log_like_iidg(log_like) if type(log_like) == np.ndarray else log_like
+        if x_err is not None:
+            self.like = (
+                log_like_iidg(log_like) if type(log_like) == np.ndarray else log_like
+            )
+        elif log_like is not None:
+            self.like = log_like
+
         if self.round == 0:
             self.round = 1
         ys = self._draw_params(obs, neff_target)
@@ -480,13 +492,12 @@ class NBI:
         weights = self.importance_reweight(obs, x_path, ys)
 
         neff = 1 / (weights**2).sum() - 1
-        # print('Initial effective sample size N =', '%.1f' % neff)
 
         f_accept = neff / neff_target
         if f_accept < 0.005:
             print("failed: sampling efficiency < 0.5%")
             return ys, weights, neff
-        print("Sampling efficiency = {0:.1f}%".format(f_accept*100))
+        print("Sampling efficiency = {0:.1f}%".format(f_accept * 100))
 
         n_required = int(neff_target * (1 / f_accept - 1))
         print("Requires N =", n_required, "more simulations")
