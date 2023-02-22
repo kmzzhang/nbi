@@ -52,8 +52,8 @@ class NBI:
         noise=None,
         prior=None,
         log_like=None,
-        x=None,
-        y=None,
+        X=None,
+        Y=None,
         flow_config={},
         idx_gpu=0,
         parallel=False,
@@ -87,9 +87,9 @@ class NBI:
 
         # if labels is None and prior is None:
         #     raise AssertionError('Parameter name must be provided via labels when prior not supplied!')
-        if type(prior) != dict and y is None:
+        if type(prior) != list and Y is None:
             raise AssertionError('Prior cannot be sampled, nor are samples provided')
-        self.ndim = y.shape[-1] if y is not None else len(prior)
+        self.ndim = Y.shape[-1] if Y is not None else len(prior)
 
         self.init_env(idx_gpu)
         flow_config_all = copy.copy(default_flow_config)
@@ -102,7 +102,7 @@ class NBI:
             featurizer['dim_out'] = flow_config_all['num_cond_inputs']
             featurizer = get_featurizer(featurizer.pop('type'), featurizer)
 
-        self.network = get_flow(featurizer, dim_param, **flow_config_all).type(self.dtype)
+        self.network = get_flow(featurizer, self.ndim, **flow_config_all).type(self.dtype)
         if parallel:
             self.network = DataParallelFlow(self.network)
 
@@ -117,14 +117,14 @@ class NBI:
         self.y_std = None
         self.norm = list()
 
-        self.x_file = x_file
-        self.y_file = y_file
+        self.X = X
+        self.Y = Y
 
         self.modify_scales = modify_scales
 
         # self.draw_prior = prior_sampler
         self.prior = prior
-        self.param_names = list(prior.keys()) if prior is not None else labels
+        self.param_names = labels
         self.simulator = simulator
         self.directory = directory
         self.n_jobs = n_jobs
@@ -167,16 +167,16 @@ class NBI:
         # deprecated
         return self.run(*args, **kwargs)
 
-    def run(
+    def fit(
         self,
-        obs,
+        n_rounds,
         n_per_round,
-        n_rounds=1,
-        n_epochs=100,
-        n_reuse=0,
+        n_epochs,
+        obs=None,
         y_true=None,
-        train_batch=512,
-        val_batch=512,
+        n_reuse=0,
+        train_batch=64,
+        val_batch=64,
         project="test",
         wandb_enabled=False,
         neff_stop=-1,
@@ -461,9 +461,11 @@ class NBI:
                 x = np.expand_dims(x, axis=list(range(3 - len(x.shape))))
             return (x - self.x_mean) / self.x_std
 
-    def infer(
-        self, obs, neff_target, y_true=None, corner_before=False, corner_after=False
+    def predict(
+        self, obs, neff_target, log_like=None, y_true=None, corner_before=False, corner_after=False
     ):
+        if log_like is not None:
+            self.like = log_like_iidg(log_like) if type(log_like) == np.ndarray else log_like
         if self.round == 0:
             self.round = 1
         ys = self._draw_params(obs, neff_target)
@@ -484,7 +486,7 @@ class NBI:
         if f_accept < 0.005:
             print("failed: sampling efficiency < 0.5%")
             return ys, weights, neff
-        print("Sampling efficiency = %.1f" % f_accept)
+        print("Sampling efficiency = {0:.1f}%".format(f_accept*100))
 
         n_required = int(neff_target * (1 / f_accept - 1))
         print("Requires N =", n_required, "more simulations")
@@ -530,10 +532,10 @@ class NBI:
         except:
             pass
 
-        if self.x_file is not None and self.round == 0:
-            paths = np.load(self.x_file)
+        if self.X is not None and self.round == 0:
             print("Use precomputed simulations for round ", self.round)
-            masks = np.array([True] * len(paths))
+            masks = np.array([True] * len(self.X))
+            return self.X, masks
         else:
             n = len(thetas)
             paths = np.array(
@@ -558,8 +560,7 @@ class NBI:
             with Pool(self.n_jobs) as p:
                 masks = p.map(parallel_simulate, jobs)
             masks = np.concatenate(masks)
-
-        return paths, masks
+            return paths, masks
 
     def _train_step(self):
         np.random.seed(self.epoch)
@@ -700,12 +701,12 @@ class NBI:
     def _draw_params(self, x, n):
         # first round: precomputed data or draw from prior
         if self.round == 0:
-            if self.y_file is not None:
-                return np.load(self.y_file)
+            if self.Y is not None:
+                return self.Y
             else:
                 params = list()
-                for key in self.param_names:
-                    params.append(self.prior[key].rvs(n))
+                for prior in self.prior:
+                    params.append(prior.rvs(n))
                 params = np.array(params).T
                 return params
         # 2+ round: sample from surrogate posterior
@@ -744,8 +745,8 @@ class NBI:
             return np.zeros(len(y))
         else:
             log_prob = np.zeros(len(y))
-            for i, key in enumerate(self.param_names):
-                log_prob += self.prior[key].logpdf(y[:, i])
+            for i, prior in enumerate(self.prior):
+                log_prob += prior.logpdf(y[:, i])
         return log_prob
 
     def log_like(self, obs, x, y):
