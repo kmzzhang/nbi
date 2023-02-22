@@ -49,6 +49,9 @@ def find_meta(meta):
     """
     Extract __*meta*__ from META_FILE.
     """
+    # match strings that starts and ends with either a single 
+    # or double quote and contains any number of characters 
+    # that are not quotes.
     meta_match = re.search(
         r"^__{meta}__ = ['\"]([^'\"]*)['\"]".format(meta=meta),
         META_FILE, re.M
