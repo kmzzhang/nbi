@@ -55,56 +55,54 @@ class Flow(nn.Module):
 
 
 def get_featurizer(
-    featurizer_type,
-    raw_dim,
-    num_cond_inputs,
-    depth=9,
-    resnet_layer=2,
-    kernel=3,
-    resnet_hidden=32,
-    resnet_max_hidden=256,
-    maxpool_size=2,
-    norm="weight_norm",
-    dropout_rnn=0.15,
+    network_type,
+    config
+    # raw_dim,
+    # num_cond_inputs,
+    # depth=9,
+    # resnet_layer=2,
+    # kernel=3,
+    # resnet_hidden=32,
+    # resnet_max_hidden=256,
+    # maxpool_size=2,
+    # norm="weight_norm",
+    # dropout_rnn=0.15,
 ):
-    if featurizer_type == "resnet":
-        featurizer = ResNetLinear(
-            raw_dim,
-            num_cond_inputs,
-            depth=depth,
-            nlayer=resnet_layer,
-            kernel_size=kernel,
-            hidden_conv=resnet_hidden,
-            max_hidden=resnet_max_hidden,
-            maxpool_size=maxpool_size,
-            norm=norm,
+    # if network_type == "resnet":
+    #     featurizer = ResNetLinear(
+    #         raw_dim,
+    #         num_cond_inputs,
+    #         depth=depth,
+    #         nlayer=resnet_layer,
+    #         kernel_size=kernel,
+    #         hidden_conv=resnet_hidden,
+    #         max_hidden=resnet_max_hidden,
+    #         maxpool_size=maxpool_size,
+    #         norm=norm,
+    #     )
+    # elif network_type == "rnn":
+    #     featurizer = RNN(
+    #         raw_dim,
+    #         hidden_rnn=num_cond_inputs,
+    #         num_layers=depth,
+    #         num_class=num_cond_inputs,
+    #         hidden=num_cond_inputs,
+    #         dropout_rnn=0.15,
+    #         dropout=0,
+    #         bidirectional=False,
+    #         rnn="GRU",
+    #         aux=0,
+    #     )
+    # else:
+    if network_type == 'sequence':
+        return ResNetRNN(
+            config['dim_in'],
+            config['dim_out'],
+            depth=config['depth'],
+            kernel_size=config.pop('kernel', 3),
+            hidden_conv=config.pop('dim_conv_min', 32),
+            max_hidden=config.pop('dim_conv_max', 256),
         )
-    elif featurizer_type == "rnn":
-        featurizer = RNN(
-            raw_dim,
-            hidden_rnn=num_cond_inputs,
-            num_layers=depth,
-            num_class=num_cond_inputs,
-            hidden=num_cond_inputs,
-            dropout_rnn=0.15,
-            dropout=0,
-            bidirectional=False,
-            rnn="GRU",
-            aux=0,
-        )
-    else:
-        featurizer = ResNetRNN(
-            raw_dim,
-            num_cond_inputs,
-            depth=depth,
-            nlayer=resnet_layer,
-            kernel_size=kernel,
-            hidden_conv=resnet_hidden,
-            max_hidden=resnet_max_hidden,
-            maxpool_size=maxpool_size,
-            norm=norm,
-        )
-    return featurizer
 
 
 def get_flow(

@@ -24,3 +24,24 @@ def parallel_simulate(args):
         mask.append(not np.isnan(simulation).any() and not np.isinf(simulation).any())
 
     return mask
+
+
+def iid_gaussian(x_err):
+    def add_noise(x, y=None):
+        """
+        x: light curve of shape (length,)
+        y: parameter of shape (dim,)
+        """
+        rand = np.random.normal(0, 1, size=x.shape[0])
+        x_noise = x + rand * x_err
+        return x_noise, y
+    return add_noise
+
+
+def log_like_iidg(x_err):
+    def log_like(x, x_path, y):
+        # x is observed data, x_path is path to saved model prediction
+        model = np.load(x_path)
+        chi2 = (((x - model) / x_err) ** 2).sum()
+        return - chi2 / 2
+    return log_like

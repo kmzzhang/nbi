@@ -21,9 +21,9 @@ from torch.optim.lr_scheduler import (
     CosineAnnealingWarmRestarts,
 )
 
-from .model import get_flow, DataParallelFlow
+from .model import get_flow, DataParallelFlow, get_featurizer
 from .data import BaseContainer
-from .utils import parallel_simulate
+from .utils import parallel_simulate, iid_gaussian, log_like_iidg
 
 corner_kwargs = {
     "quantiles": [0.16, 0.5, 0.84],
@@ -48,16 +48,16 @@ class NBI:
     def __init__(
         self,
         featurizer,
-        dim_param,
-        physics=None,
-        prior_sampler=None,
-        log_prior=None,
+        simulator=None,
+        noise=None,
+        prior=None,
         log_like=None,
-        instrumental=None,
+        x=None,
+        y=None,
         flow_config={},
         idx_gpu=0,
         parallel=False,
-        directory="",
+        directory="test",
         n_jobs=1,
         n_jobs_loader=0,
         modify_scales=None,
@@ -71,11 +71,11 @@ class NBI:
         featurizer (nn.Module): pytorch network which maps input sequence of shape [Batch, Channel, Length] to
                 output feature vector of shape [Batch, Dimension]. See NBI.get_featurizer() for pre-defined ones.
         dim_param (int): number of inferred parameters
-        physics (callable): a function which takes (thetas, files)
+        simulator (callable): a function which takes (thetas, files)
         prior_sampler
         log_prior
         log_like
-        instrumental
+        noise
         flow_config
         idx_gpu
         parallel
@@ -85,13 +85,24 @@ class NBI:
         labels
         """
 
+        # if labels is None and prior is None:
+        #     raise AssertionError('Parameter name must be provided via labels when prior not supplied!')
+        if type(prior) != dict and y is None:
+            raise AssertionError('Prior cannot be sampled, nor are samples provided')
+        self.ndim = y.shape[-1] if y is not None else len(prior)
+
         self.init_env(idx_gpu)
-        self.ndim = dim_param
-        config = copy.copy(default_flow_config)
-        config.update(flow_config)
+        flow_config_all = copy.copy(default_flow_config)
+        flow_config_all.update(flow_config)
         corner_kwargs.update({"labels": labels})
 
-        self.network = get_flow(featurizer, dim_param, **config).type(self.dtype)
+        # if featurizer is not user provided pytorch module
+        # generate featurizer network based on user specified type and hyperparameters
+        if type(featurizer) == dict:
+            featurizer['dim_out'] = flow_config_all['num_cond_inputs']
+            featurizer = get_featurizer(featurizer.pop('type'), featurizer)
+
+        self.network = get_flow(featurizer, dim_param, **flow_config_all).type(self.dtype)
         if parallel:
             self.network = DataParallelFlow(self.network)
 
@@ -106,16 +117,27 @@ class NBI:
         self.y_std = None
         self.norm = list()
 
+        self.x_file = x_file
+        self.y_file = y_file
+
         self.modify_scales = modify_scales
 
-        self.draw_prior = prior_sampler
-        self.prior = log_prior
-        self.like = log_like
-        self.simulator = physics
-        self.process = instrumental
+        # self.draw_prior = prior_sampler
+        self.prior = prior
+        self.param_names = list(prior.keys()) if prior is not None else labels
+        self.simulator = simulator
         self.directory = directory
         self.n_jobs = n_jobs
         self.n_jobs_loader = n_jobs_loader
+
+        if type(noise) == np.ndarray:
+            # for i.i.d. gaussian noise
+            self.process = iid_gaussian(noise)
+            self.like = log_like_iidg(noise)
+        else:
+            # for custom noise
+            self.process = noise
+            self.like = log_like
 
         self.round = 0
         self.early_stop_count = 0
@@ -163,19 +185,15 @@ class NBI:
         f_val=0.1,
         lr=0.001,
         min_lr=None,
-        x_file=None,
-        y_file=None,
         decay_type="SGDR",
         debug=False,
     ):
         self.n_epochs = n_epochs
-        self.x_file = x_file
-        self.y_file = y_file
 
         self._init_wandb(project, wandb_enabled)
 
         if min_lr is None:
-            min_lr = lr * 0.001
+            min_lr = lr / n_epochs
 
         """
          restart training:
@@ -685,7 +703,11 @@ class NBI:
             if self.y_file is not None:
                 return np.load(self.y_file)
             else:
-                return self.draw_prior(n)
+                params = list()
+                for key in self.param_names:
+                    params.append(self.prior[key].rvs(n))
+                params = np.array(params).T
+                return params
         # 2+ round: sample from surrogate posterior
         else:
             params = self.sample(x, n=n)
@@ -718,10 +740,13 @@ class NBI:
         self.y_std = y_list.std(0, keepdims=True)
 
     def log_prior(self, y):
-        values = list()
-        for i in range(len(y)):
-            values.append(self.prior(y[i]))
-        return np.array(values)
+        if self.prior is None:
+            return np.zeros(len(y))
+        else:
+            log_prob = np.zeros(len(y))
+            for i, key in enumerate(self.param_names):
+                log_prob += self.prior[key].logpdf(y[:, i])
+        return log_prob
 
     def log_like(self, obs, x, y):
         values = list()
