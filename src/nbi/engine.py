@@ -187,8 +187,10 @@ class NBI:
         min_lr=None,
         decay_type="SGDR",
         debug=False,
+        f_resample=1,
     ):
         self.n_epochs = n_epochs
+        self.f_resample = f_resample
 
         self._init_wandb(project, wandb_enabled)
 
@@ -303,12 +305,37 @@ class NBI:
         self.corner(obs, all_thetas, y_true=y_true, weights=all_weights)
 
     def prepare_data(self, obs, n_per_round, y_true=None):
-        ys = self._draw_params(obs, n_per_round)
+        if self.round == 0:
+            ys = self._draw_params(obs, n_per_round)
+        else:
+            ys = self._draw_params(obs, n_per_round * self.f_resample)
+
+            if self.f_resample > 1:
+                logprior = self.log_prior(ys)
+                logproposal = self.log_prob(obs, ys)
+
+                log_weights = logprior - logproposal
+                bad = np.isnan(log_weights) + np.isinf(log_weights)
+                log_weights -= log_weights[~bad].max()
+
+                probs = np.exp(log_weights)
+                print(probs.sum())
+                index = np.random.choice(
+                    np.arange(len(ys)),
+                    size=min(len(ys), n_per_round),
+                    p=probs / probs.sum(),
+                    replace=False,
+                )
+                ys = ys[index]
+
+                print("surrogate posterior after resampling")
+                self.corner(obs, ys, y_true=y_true)
+
         np.save(os.path.join(self.directory, str(self.round)) + "_y_all.npy", ys)
 
-        if self.round > 0:
-            print("surrogate posterior")
-            self.corner(obs, ys, y_true=y_true)
+        # if self.round > 0:
+        #     print("surrogate posterior")
+        #     self.corner(obs, ys, y_true=y_true)
 
         x_path, good = self.simulate(ys)
         np.save(os.path.join(self.directory, str(self.round)) + "_x.npy", x_path[good])
@@ -316,7 +343,12 @@ class NBI:
 
         self.add_round_data(x_path, ys, good)
 
-        weights = self.importance_reweight(obs, self.x_all[-1], self.y_all[-1])
+        weights = self.importance_reweight(
+            obs,
+            self.x_all[-1],
+            self.y_all[-1],
+            from_prior=(self.round > 0) and (self.f_resample > 5),
+        )
         self.weights.append(weights)
         np.save(os.path.join(self.directory, str(self.round)) + "_w.npy", weights)
 
@@ -372,15 +404,33 @@ class NBI:
 
             return x_round, y_round
 
-    def importance_reweight(self, obs, x, y):
+    def importance_reweight(self, obs, x, y, from_prior=False):
+        if self.like is None or obs is None:
+            return None
+        if from_prior:
+            print("from_prior")
+            log_weights = self.log_like(obs, x, y)
+        else:
+            loglike = self.log_like(obs, x, y)
+            logprior = self.log_prior(y)
+            logproposal = self.log_prob(obs, y)
+
+            log_weights = loglike + logprior - logproposal
+
+        bad = np.isnan(log_weights) + np.isinf(log_weights)
+        log_weights -= log_weights[~bad].max()
+
+        weights = np.exp(log_weights)
+        weights[bad] = 0
+        weights /= weights.sum()
+
+        return weights
+
+    def importance_reweight_like_only(self, obs, x, y):
         if self.like is None or obs is None:
             return None
 
-        loglike = self.log_like(obs, x, y)
-        logprior = self.log_prior(y)
-        logproposal = self.log_prob(obs, y)
-
-        log_weights = loglike + logprior - logproposal
+        log_weights = self.log_like(obs, x, y)
         bad = np.isnan(log_weights) + np.isinf(log_weights)
         log_weights -= log_weights[~bad].max()
 
