@@ -6,7 +6,6 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 import corner
 import numpy as np
 import matplotlib.pyplot as plt
-import wandb
 from multiprocess import Pool
 from tqdm import tqdm
 from tqdm.notebook import tqdm as tqdmn
@@ -40,7 +39,6 @@ default_flow_config = {
     "perm_seed": 3,
     "n_mog": 8,
 }
-
 
 class NBI:
     """Neural bayesian inference engine for astronomical data"""
@@ -610,7 +608,7 @@ class NBI:
         pbar.set_description("Val, Log likelihood in nats: {:.6f}".format(-val_loss))
         self.vloss.append(val_loss)
 
-    def _init_wandb(self, project, enable=True):
+    def _init_wandb(self, project, enable):
         self.wandb = enable
         if enable:
             try:
