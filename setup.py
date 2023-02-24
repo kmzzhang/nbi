@@ -11,7 +11,7 @@ INSTALL_REQUIRES = [
     "corner",
     "joblib",
     "pytest",
-    "tqdm",
+    "tqdm>=4.64.1",
     'wandb',
     'multiprocess',
     'ipywidgets'
