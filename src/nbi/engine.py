@@ -257,7 +257,6 @@ class NBI:
                 return
 
             self.round += 1
-            self.prepare_data(obs, n_per_round, y_true)
 
             if np.sum(self.neff) > neff_stop > 0:
                 print("early stopping")
@@ -281,6 +280,8 @@ class NBI:
                     self.prepare_data(obs, n_required, y_true)
                     self.corner_all(obs, y_true)
                     return
+
+            self.prepare_data(obs, n_per_round, y_true)
 
         if obs is not None:
             self.corner_all(obs, y_true)
@@ -311,6 +312,8 @@ class NBI:
             ys = self._draw_params(obs, n_per_round * self.f_resample)
 
             if self.f_resample > 1:
+                # print sampling efficiency
+                self.predict(obs, 512 // self.n_jobs * self.n_jobs, eff_only=True)
                 logprior = self.log_prior(ys)
                 logproposal = self.log_prob(obs, ys)
 
@@ -319,7 +322,6 @@ class NBI:
                 log_weights -= log_weights[~bad].max()
 
                 probs = np.exp(log_weights)
-                print(probs.sum())
                 index = np.random.choice(
                     np.arange(len(ys)),
                     size=min(len(ys), n_per_round),
@@ -328,8 +330,8 @@ class NBI:
                 )
                 ys = ys[index]
 
-                print("surrogate posterior after resampling")
-                self.corner(obs, ys, y_true=y_true)
+                # print("surrogate posterior after resampling")
+                # self.corner(obs, ys, y_true=y_true)
 
         np.save(os.path.join(self.directory, str(self.round)) + "_y_all.npy", ys)
 
@@ -341,7 +343,8 @@ class NBI:
         np.save(os.path.join(self.directory, str(self.round)) + "_x.npy", x_path[good])
         np.save(os.path.join(self.directory, str(self.round)) + "_y.npy", ys[good])
 
-        self.add_round_data(x_path, ys, good)
+        self.x_all.append(np.array(x_path)[good])
+        self.y_all.append(np.array(ys)[good])
 
         weights = self.importance_reweight(
             obs,
@@ -363,7 +366,7 @@ class NBI:
 
     def weighted_corner(self, obs, y_true):
         try:
-            print("reweighted posterior from current round")
+            # print("reweighted posterior from current round")
             self.corner(obs, self.y_all[-1], y_true=y_true, weights=self.weights[-1])
 
         except:
@@ -376,12 +379,6 @@ class NBI:
         prev_losses = np.array(self.vloss[-1 * patience - 1 :])
         base_loss = self.vloss[-1 * patience - 2]
         return (prev_losses > base_loss).all()
-
-    def add_round_data(self, x, y, good):
-        self.x_all.append(np.array(x)[good])
-        self.y_all.append(np.array(y)[good])
-        if len(x) != good.sum():
-            print("Number of simulations with nan/inf:", len(x) - good.sum())
 
     def result(self):
         all_weights = np.concatenate(
@@ -408,7 +405,6 @@ class NBI:
         if self.like is None or obs is None:
             return None
         if from_prior:
-            print("from_prior")
             log_weights = self.log_like(obs, x, y)
         else:
             loglike = self.log_like(obs, x, y)
@@ -520,6 +516,7 @@ class NBI:
         y_true=None,
         corner_before=False,
         corner_after=False,
+        eff_only=False
     ):
         if x_err is not None:
             self.like = (
@@ -544,10 +541,14 @@ class NBI:
         neff = 1 / (weights**2).sum() - 1
 
         f_accept = neff / neff_target
+        print("Sampling efficiency = {0:.1f}%".format(f_accept * 100))
+
+        # for debugging: show efficiency
+        if eff_only:
+            return
         if f_accept < 0.005:
             print("failed: sampling efficiency < 0.5%")
             return ys, weights, neff
-        print("Sampling efficiency = {0:.1f}%".format(f_accept * 100))
 
         n_required = int(neff_target * (1 / f_accept - 1))
         print("Requires N =", n_required, "more simulations")
@@ -576,7 +577,7 @@ class NBI:
             # GPU memory control (make larger?)
             if n > 20000:
                 s = list()
-                for i in range(n // 20000 + 1):
+                for i in range(n // 100000 + 1):
                     s.append(self.get_network()(x, n=n, sample=True).cpu().numpy())
                 s = np.concatenate(s)[:n]
             else:
