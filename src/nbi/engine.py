@@ -129,6 +129,8 @@ class NBI:
         self.directory = directory
         self.n_jobs = n_jobs
         self.n_jobs_loader = n_jobs_loader
+        self.obs = None
+        self.y_true = None
 
         if type(noise) == np.ndarray:
             # for i.i.d. gaussian noise
@@ -147,11 +149,11 @@ class NBI:
         self.neff = list()
         self.state_dict_0 = self.get_state_dict()
 
-        self.prev_state = None
-        self.prev_x_mean = None
-        self.prev_x_std = None
-        self.prev_y_mean = None
-        self.prev_y_std = None
+        self.prev_state = list()
+        self.prev_x_mean = list()
+        self.prev_x_std = list()
+        self.prev_y_mean = list()
+        self.prev_y_std = list()
 
         try:
             os.mkdir(self.directory)
@@ -162,10 +164,6 @@ class NBI:
             self.tqdm = tqdmn
         else:
             self.tqdm = tqdm
-
-    def train(self, *args, **kwargs):
-        # deprecated
-        return self.run(*args, **kwargs)
 
     def fit(
         self,
@@ -186,26 +184,25 @@ class NBI:
         lr=0.001,
         min_lr=None,
         decay_type="SGDR",
-        debug=False,
         f_resample=1,
+        plot=True,
+        eta_min=-1,
     ):
         self.n_epochs = n_epochs
         self.f_resample = f_resample
+        self.obs = obs
+        self.y_true = y_true
 
         self._init_wandb(project, wandb_enabled)
 
         if min_lr is None:
             min_lr = lr / n_epochs
 
-        """
-         restart training:
-          - len(self.x_all) == self.round + 1
-            - data already generated
-          - len(self.x_all) == self.round
-            - data not available
-        """
+        # for restarting training
         if len(self.x_all) == self.round:
-            self.prepare_data(obs, n_per_round, y_true=y_true)
+            # this is not a restart because
+            # data for this round has not been generated
+            self.prepare_data(obs, n_per_round)
 
         for i in range(n_rounds):
             print(
@@ -225,7 +222,6 @@ class NBI:
 
             for epoch in range(n_epochs):
                 self.epoch = epoch
-                print("\nEpoch: {}".format(epoch))
                 self._train_step()
                 self._step_scheduler()
                 self._validate_step()
@@ -246,71 +242,82 @@ class NBI:
                     )
                     self.load_state_dict(self.epoch - early_stop_patience - 2)
                     break
-                if debug:
-                    ys = self.sample(obs, n_per_round)
-                    self.corner(obs, ys, y_true=y_true)
 
             self.save_current_state()
-
-            if obs is None:
-                self.round += 1
-                return
-
             self.round += 1
 
+            # one round training for amortized inference
+            if obs is None:
+                return
+
+            self.prepare_data(obs, n_per_round)
+
+            if self.round > 0 and plot:
+                self.weighted_corner(obs, y_true)
+
+            # early stopping
             if np.sum(self.neff) > neff_stop > 0:
-                print("early stopping")
+                print("Success: Exceed specified stopping sample size!")
                 self.corner_all(obs, y_true)
                 return
 
-            if early_stop_train and self.round > 1 and neff_stop > 0:
+            eta_round = self.neff[-1] / n_per_round
+            if self.neff[-1] / n_per_round > eta_min > 0:
+                print("Success: Sampling efficiency is {:.1f}!".format(eta_round))
+                self.corner_all(obs, y_true)
+                return
+
+            if early_stop_train and self.round > 1:
                 if self.neff[-1] < self.neff[-2]:
-                    self.load_prev_state()
-                    n_required = neff_stop - np.sum(self.neff)
-                    f_accept = self.neff[-2] / n_per_round
-                    if f_accept < 0.005:
-                        print("failed: acceptance rate < 0.5%")
-                        return
-                    n_required /= f_accept
-                    n_required = int(n_required)
-                    print("stop training")
-                    print("importance sampling N =", n_required)
-
-                    self.round += 1
-                    self.prepare_data(obs, n_required, y_true)
-                    self.corner_all(obs, y_true)
+                    print(
+                        "Early stop: Surrogate posterior did not improve for this round"
+                    )
+                    self.load_prev_state(self.round - 2)
+                    # n_required = neff_stop - np.sum(self.neff)
+                    # f_accept = self.neff[-2] / n_per_round
+                    # if f_accept < 0.005:
+                    #     print("failed: acceptance rate < 0.5%")
+                    #     return
+                    # n_required /= f_accept
+                    # n_required = int(n_required)
+                    # print("stop training")
+                    # print("importance sampling N =", n_required)
+                    #
+                    # self.round += 1
+                    # self.prepare_data(obs, n_required)
+                    # self.corner_all(obs, y_true)
                     return
-
-            self.prepare_data(obs, n_per_round, y_true)
 
         if obs is not None:
             self.corner_all(obs, y_true)
 
     def save_current_state(self):
-        self.prev_state = self.get_state_dict()
-        self.prev_x_mean = self.x_mean
-        self.prev_x_std = self.x_std
-        self.prev_y_mean = self.y_mean
-        self.prev_y_std = self.y_std
+        prev_state = self.get_state_dict()
+        self.prev_state.append(prev_state)
+        self.prev_x_mean.append(self.x_mean)
+        self.prev_x_std.append(self.x_std)
+        self.prev_y_mean.append(self.y_mean)
+        self.prev_y_std.append(self.y_std)
 
-    def load_prev_state(self):
-        self.get_network().load_state_dict(self.prev_state)
-        self.x_mean = self.prev_x_mean
-        self.x_std = self.prev_x_std
-        self.y_mean = self.prev_y_mean
-        self.y_std = self.prev_y_std
+    def load_prev_state(self, round):
+        print("Loaded state from round ", round)
+        self.get_network().load_state_dict(self.prev_state[round])
+        self.x_mean = self.prev_x_mean[round]
+        self.x_std = self.prev_x_std[round]
+        self.y_mean = self.prev_y_mean[round]
+        self.y_std = self.prev_y_std[round]
 
     def corner_all(self, obs, y_true):
         print("reweighted posterior from all rounds")
         all_thetas, all_weights = self.result()
         self.corner(obs, all_thetas, y_true=y_true, weights=all_weights)
 
-    def prepare_data(self, obs, n_per_round, y_true=None):
+    def prepare_data(self, obs, n_per_round):
         if self.round == 0:
             ys = self._draw_params(obs, n_per_round)
         else:
             ys = self._draw_params(obs, n_per_round * self.f_resample)
-
+            # resample the surrogate posterior back to the prior
             if self.f_resample > 1:
                 # print sampling efficiency
                 self.predict(obs, 512 // self.n_jobs * self.n_jobs, eff_only=True)
@@ -330,14 +337,7 @@ class NBI:
                 )
                 ys = ys[index]
 
-                # print("surrogate posterior after resampling")
-                # self.corner(obs, ys, y_true=y_true)
-
         np.save(os.path.join(self.directory, str(self.round)) + "_y_all.npy", ys)
-
-        # if self.round > 0:
-        #     print("surrogate posterior")
-        #     self.corner(obs, ys, y_true=y_true)
 
         x_path, good = self.simulate(ys)
         np.save(os.path.join(self.directory, str(self.round)) + "_x.npy", x_path[good])
@@ -355,14 +355,14 @@ class NBI:
         self.weights.append(weights)
         np.save(os.path.join(self.directory, str(self.round)) + "_w.npy", weights)
 
-        if self.round > 0:
-            self.weighted_corner(obs, y_true)
-
         if self.like is not None and obs is not None:
             neff = 1 / (weights**2).sum() - 1
             self.neff.append(neff)
-            print("Effective sample size for this round", "%.1f" % neff)
-            print("Effective sample size for all rounds: ", "%.1f" % np.sum(self.neff))
+            print(
+                "Effective sample size for current/all rounds",
+                "%.1f/%.1f" % (neff, np.sum(self.neff)),
+            )
+            # print("Effective sample size for all rounds: ", "%.1f" % np.sum(self.neff))
 
     def weighted_corner(self, obs, y_true):
         try:
@@ -456,7 +456,7 @@ class NBI:
             return self.network
 
     def get_state_dict(self):
-        return self.get_network().state_dict()
+        return copy.deepcopy(self.get_network().state_dict())
 
     def load_state_dict(self, epoch):
         path_round = os.path.join(self.directory, str(self.round))
@@ -509,15 +509,18 @@ class NBI:
 
     def predict(
         self,
-        obs,
-        neff_target,
+        obs=None,
+        neff_target=100,
         x_err=None,
         log_like=None,
         y_true=None,
         corner_before=False,
         corner_after=False,
-        eff_only=False
+        eff_only=False,
     ):
+        if obs is None:
+            obs = self.obs
+            y_true = self.y_true
         if x_err is not None:
             self.like = (
                 log_like_iidg(log_like) if type(log_like) == np.ndarray else log_like
@@ -653,7 +656,9 @@ class NBI:
 
             pbar.update(x.shape[0])
             pbar.set_description(
-                "Train, Log likelihood in nats: {:.6f}".format(-np.mean(train_loss))
+                "Epoch {:d}: Train, Loglike in nats: {:.6f}".format(
+                    self.epoch, -np.mean(train_loss)
+                )
             )
 
         if self.clip > 0:
@@ -680,15 +685,17 @@ class NBI:
                 val_loss.append(loss.detach().cpu().numpy())
             pbar.update(x.shape[0])
             pbar.set_description(
-                "Val, Log likelihood in nats: {:.6f}".format(
-                    -np.sum(val_loss) / (batch_idx + 1)
+                "Epoch {:d}: Val, Loglike in nats: {:.6f}".format(
+                    self.epoch, -np.sum(val_loss) / (batch_idx + 1)
                 )
             )
 
         # pbar.close()
         val_loss = np.array(val_loss)
         val_loss = val_loss[val_loss < np.percentile(val_loss, 90)].mean()
-        pbar.set_description("Val, Log likelihood in nats: {:.6f}".format(-val_loss))
+        pbar.set_description(
+            "Epoch {:d}: Val, Loglike in nats: {:.6f}".format(self.epoch, -val_loss)
+        )
         self.vloss.append(val_loss)
 
     def _init_wandb(self, project, enable=True):
