@@ -62,7 +62,8 @@ class NBI:
         modify_scales=None,
         labels=None,
         tqdm_notebook=False,
-        network_reinit=True
+        network_reinit=True,
+        scale_reinit=True
     ):
         """
 
@@ -96,6 +97,7 @@ class NBI:
         flow_config_all.update(flow_config)
         corner_kwargs.update({"labels": labels})
         self.network_reinit = network_reinit
+        self.scale_reinit = scale_reinit
 
         # if featurizer is not user provided pytorch module
         # generate featurizer network based on user specified type and hyperparameters
@@ -180,7 +182,7 @@ class NBI:
         project="test",
         wandb_enabled=False,
         neff_stop=-1,
-        early_stop_train=True,
+        early_stop_train=False,
         early_stop_patience=-1,
         f_val=0.1,
         lr=0.001,
@@ -270,7 +272,7 @@ class NBI:
                 return
 
             if early_stop_train and self.round > 1:
-                if self.neff[-1] < self.neff[-2]:
+                if 1 < self.neff[-1] < self.neff[-2]:
                     print(
                         "Early stop: Surrogate posterior did not improve for this round"
                     )
@@ -766,7 +768,8 @@ class NBI:
         )
         self.valid_loader = DataLoader(val_container, batch_size=val_batch, **kwargs)
 
-        if self.network_reinit or self.round == 0:
+        # if self.network_reinit or self.round == 0:
+        if self.scale_reinit or self.round == 0:
             self._init_scales()
 
     def _draw_params(self, x, n):
