@@ -62,6 +62,7 @@ class NBI:
         modify_scales=None,
         labels=None,
         tqdm_notebook=False,
+        network_reinit=True
     ):
         """
 
@@ -94,6 +95,7 @@ class NBI:
         flow_config_all = copy.copy(default_flow_config)
         flow_config_all.update(flow_config)
         corner_kwargs.update({"labels": labels})
+        self.network_reinit = network_reinit
 
         # if featurizer is not user provided pytorch module
         # generate featurizer network based on user specified type and hyperparameters
@@ -685,17 +687,15 @@ class NBI:
                 val_loss.append(loss.detach().cpu().numpy())
             pbar.update(x.shape[0])
             pbar.set_description(
-                "Epoch {:d}: Val, Loglike in nats: {:.6f}".format(
-                    self.epoch, -np.sum(val_loss) / (batch_idx + 1)
+                "- Val, Loglike in nats: {:.6f}".format(
+                    -np.sum(val_loss) / (batch_idx + 1)
                 )
             )
 
         # pbar.close()
         val_loss = np.array(val_loss)
         val_loss = val_loss[val_loss < np.percentile(val_loss, 90)].mean()
-        pbar.set_description(
-            "Epoch {:d}: Val, Loglike in nats: {:.6f}".format(self.epoch, -val_loss)
-        )
+        pbar.set_description("- Val, Loglike in nats: {:.6f}".format(-val_loss))
         self.vloss.append(val_loss)
 
     def _init_wandb(self, project, enable=True):
@@ -712,7 +712,8 @@ class NBI:
 
     def _init_train(self, lr, clip=85):
         self.clip = clip
-        self.get_network().load_state_dict(self.state_dict_0)
+        if self.network_reinit:
+            self.get_network().load_state_dict(self.state_dict_0)
         self.optimizer = optim.Adam(self.network.parameters(), lr=lr)
 
         self.prev_clip = 1e8
@@ -765,7 +766,8 @@ class NBI:
         )
         self.valid_loader = DataLoader(val_container, batch_size=val_batch, **kwargs)
 
-        self._init_scales()
+        if self.network:
+            self._init_scales()
 
     def _draw_params(self, x, n):
         # first round: precomputed data or draw from prior
