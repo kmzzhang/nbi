@@ -766,7 +766,7 @@ class NBI:
         )
         self.valid_loader = DataLoader(val_container, batch_size=val_batch, **kwargs)
 
-        if self.network:
+        if self.network_reinit:
             self._init_scales()
 
     def _draw_params(self, x, n):
