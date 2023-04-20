@@ -62,7 +62,7 @@ class NBI:
         modify_scales=None,
         labels=None,
         tqdm_notebook=False,
-        network_reinit=True,
+        network_reinit=False,
         scale_reinit=True
     ):
         """
@@ -190,7 +190,7 @@ class NBI:
         decay_type="SGDR",
         f_resample=1,
         plot=True,
-        eta_min=-1,
+        f_accept_min=-1,
     ):
         self.n_epochs = n_epochs
         self.f_resample = f_resample
@@ -265,9 +265,9 @@ class NBI:
                 self.corner_all(obs, y_true)
                 return
 
-            eta_round = self.neff[-1] / n_per_round
-            if self.neff[-1] / n_per_round > eta_min > 0:
-                print("Success: Sampling efficiency is {:.1f}!".format(eta_round))
+            f_accept_round = self.neff[-1] / n_per_round
+            if self.neff[-1] / n_per_round > f_accept_min > 0:
+                print("Success: Sampling efficiency is {:.1f}!".format(f_accept_round))
                 self.corner_all(obs, y_true)
                 return
 
@@ -277,19 +277,6 @@ class NBI:
                         "Early stop: Surrogate posterior did not improve for this round"
                     )
                     self.load_prev_state(self.round - 2)
-                    # n_required = neff_stop - np.sum(self.neff)
-                    # f_accept = self.neff[-2] / n_per_round
-                    # if f_accept < 0.005:
-                    #     print("failed: acceptance rate < 0.5%")
-                    #     return
-                    # n_required /= f_accept
-                    # n_required = int(n_required)
-                    # print("stop training")
-                    # print("importance sampling N =", n_required)
-                    #
-                    # self.round += 1
-                    # self.prepare_data(obs, n_required)
-                    # self.corner_all(obs, y_true)
                     return
 
         if obs is not None:
@@ -521,16 +508,15 @@ class NBI:
         corner_before=False,
         corner_after=False,
         eff_only=False,
+        min_f_accept=0.01
     ):
         if obs is None:
             obs = self.obs
             y_true = self.y_true
-        if x_err is not None:
-            self.like = (
-                log_like_iidg(log_like) if type(log_like) == np.ndarray else log_like
-            )
-        elif log_like is not None:
-            self.like = log_like
+
+        self.like = (
+            log_like_iidg(x_err) if type(x_err) == np.ndarray else log_like
+        )
 
         if self.round == 0:
             self.round = 1
@@ -548,14 +534,15 @@ class NBI:
         neff = 1 / (weights**2).sum() - 1
 
         f_accept = neff / neff_target
+        print("Initial n_eff = {0:.1f}".format(neff))
         print("Sampling efficiency = {0:.1f}%".format(f_accept * 100))
 
         # for debugging: show efficiency
         if eff_only:
             return
-        if f_accept < 0.005:
-            print("failed: sampling efficiency < 0.5%")
-            return ys, weights, neff
+        if f_accept < min_f_accept:
+            print("Sampling efficiency below minimum required. \\Consider increasing min_f_accept")
+            return ys, weights
 
         n_required = int(neff_target * (1 / f_accept - 1))
         print("Requires N =", n_required, "more simulations")
