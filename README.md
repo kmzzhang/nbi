@@ -58,7 +58,7 @@ Then create a PR back to `upstream`:
 https://github.com/<your_username>/nbi/pull/new/<your_local_branch_with_changes_name>
 ```
 
-# Acknowledgments
+## Acknowledgments
 Work on this project was supported by the [National Science Foundation award #2206744](https://www.nsf.gov/awardsearch/showAward?AWD_ID=2206744&HistoricalAwards=false) ("CDS&E: Accelerating Astrophysical Insight at Scale with Likelihood-Free Inference").
 
 <center><img src="https://www.nsf.gov/policies/images/NSF_Official_logo.svg" width="20%"></center>
