@@ -74,7 +74,6 @@ class NBI:
         parallel
         directory
         n_jobs
-        modify_scales
         labels
         """
 
@@ -173,7 +172,7 @@ class NBI:
         f_accept_min=-1,
         workers=0
     ):
-        assert n_sims > 0 or X is not None
+        assert n_sims > 0 or x is not None
 
         if type(noise) == np.ndarray:
             # for i.i.d. gaussian noise
@@ -472,10 +471,10 @@ class NBI:
         log_like=None,
         y_true=None,
         n_samples=1000,
-        eff_size=False,
+        n_max=-1,
+        neff_min=1,
         corner=False,
-        corner_reweight=False,
-        f_min=0.01
+        corner_reweight=False
     ):
 
         self.like = (
@@ -504,13 +503,11 @@ class NBI:
         print("Effective Sample Size = {0:.1f}".format(neff))
         print("Sampling efficiency = {0:.1f}%".format(f_accept * 100))
 
-        if eff_size:
-            if f_accept < f_min:
-                print("Sampling efficiency below minimum required. \nConsider increasing min_f_accept")
-                return ys, weights
+        if n_max > n_samples and neff > neff_min:
 
             n_required = int(n_samples * (1 / f_accept - 1))
-            print("Requires N =", n_required, "more simulations")
+            print("Requires N =", n_required, "more simulations to reach n_samples")
+            n_required = min(n_required, n_max - n_samples)
 
             ys_extra = self._draw_params(x, n_required)
             x_path, good = self.simulate(ys_extra)
