@@ -107,7 +107,7 @@ def get_featurizer(
 
 def get_flow(
     featurizer,
-    dim_theta,
+    n_dims,
     flow_hidden,
     num_cond_inputs,
     num_blocks=5,
@@ -122,9 +122,9 @@ def get_flow(
 
     for i, _ in enumerate(range(num_blocks)):
         modules += [
-            flows.Shuffle(dim_theta, perm_seed + i),
+            flows.Shuffle(n_dims, perm_seed + i),
             MADE(
-                dim_theta,
+                n_dims,
                 flow_hidden,
                 num_cond_inputs,
                 shift_only=False,
@@ -135,9 +135,9 @@ def get_flow(
         ]
 
     modules += [
-        flows.Shuffle(dim_theta, perm_seed + num_blocks + 1),
+        flows.Shuffle(n_dims, perm_seed + num_blocks + 1),
         flows.MADEMOG(
-            dim_theta,
+            n_dims,
             flow_hidden,
             num_cond_inputs,
             n_components=n_mog,
@@ -149,7 +149,7 @@ def get_flow(
     ]
     flow = flows.FlowSequentialMOG(*modules)
     flow.init(n_mog)
-    flow.set_num_inputs(dim_theta)
+    flow.set_num_inputs(n_dims)
 
     for module in flow.modules():
         if isinstance(module, nn.Linear):
