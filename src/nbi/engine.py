@@ -119,6 +119,9 @@ class NBI:
         self.obs = None
         self.y_true = None
 
+        self.x = None
+        self.y = None
+
         self.process = None
         self.like = None
 
@@ -172,7 +175,7 @@ class NBI:
         f_accept_min=-1,
         workers=0
     ):
-        assert n_sims > 0 or x is not None
+        assert n_sims > 0 or y is not None
 
         if type(noise) == np.ndarray:
             # for i.i.d. gaussian noise
