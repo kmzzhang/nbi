@@ -1,4 +1,4 @@
-# Adapted from :https://github.com/kamenbliznashki/normalizing_flows/blob/master/maf.py
+# Modified from :https://github.com/kamenbliznashki/normalizing_flows/blob/master/maf.py
 
 import math
 

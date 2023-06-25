@@ -40,6 +40,7 @@ default_flow_config = {
     "n_mog": 1,
 }
 
+
 class NBI:
     """Neural bayesian inference engine for astronomical data"""
 
@@ -55,7 +56,7 @@ class NBI:
         labels=None,
         tqdm_notebook=False,
         network_reinit=False,
-        scale_reinit=True
+        scale_reinit=True,
     ):
         """
 
@@ -93,9 +94,7 @@ class NBI:
             featurizer["dim_out"] = flow_config_all["num_cond_inputs"]
             featurizer = get_featurizer(featurizer.pop("type"), featurizer)
 
-        self.network = get_flow(featurizer, **flow_config_all).type(
-            self.dtype
-        )
+        self.network = get_flow(featurizer, **flow_config_all).type(self.dtype)
         self.network = DataParallelFlow(self.network)
 
         self.epoch = 0
@@ -108,7 +107,6 @@ class NBI:
         self.y_mean = None
         self.y_std = None
         self.norm = list()
-
 
         # self.draw_prior = prior_sampler
         self.prior = priors
@@ -173,7 +171,7 @@ class NBI:
         decay_type="SGDR",
         plot=True,
         f_accept_min=-1,
-        workers=4
+        workers=4,
     ):
         assert n_sims > 0 or y is not None
 
@@ -189,10 +187,9 @@ class NBI:
         self.n_epochs = n_epochs
         self.obs = x_obs
         self.y_true = y_true
-        
+
         self.x = x
         self.y = y
-
 
         self._init_wandb(project, wandb_enabled)
 
@@ -246,7 +243,6 @@ class NBI:
 
             self.save_current_state()
             self.round += 1
-
 
             self.prepare_data(x_obs, n_sims)
 
@@ -309,11 +305,7 @@ class NBI:
         self.x_all.append(np.array(x_path)[good])
         self.y_all.append(np.array(ys)[good])
 
-        weights = self.importance_reweight(
-            x_obs,
-            self.x_all[-1],
-            self.y_all[-1]
-        )
+        weights = self.importance_reweight(x_obs, self.x_all[-1], self.y_all[-1])
         self.weights.append(weights)
         np.save(os.path.join(self.directory, str(self.round)) + "_w.npy", weights)
 
@@ -477,12 +469,9 @@ class NBI:
         n_max=-1,
         neff_min=1,
         corner=False,
-        corner_reweight=False
+        corner_reweight=False,
     ):
-
-        self.like = (
-            log_like_iidg(x_err) if type(x_err) == np.ndarray else log_like
-        )
+        self.like = log_like_iidg(x_err) if type(x_err) == np.ndarray else log_like
 
         if self.round == 0:
             self.round = 1
@@ -507,7 +496,6 @@ class NBI:
         print("Sampling efficiency = {0:.1f}%".format(f_accept * 100))
 
         if n_max > n_samples and neff > neff_min:
-
             n_required = int(n_samples * (1 / f_accept - 1))
             print("Requires N =", n_required, "more simulations to reach n_samples")
             n_required = min(n_required, n_max - n_samples)
