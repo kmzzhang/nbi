@@ -173,7 +173,7 @@ class NBI:
         decay_type="SGDR",
         plot=True,
         f_accept_min=-1,
-        workers=0
+        workers=4
     ):
         assert n_sims > 0 or y is not None
 
@@ -471,8 +471,8 @@ class NBI:
         self,
         x,
         x_err=None,
-        log_like=None,
         y_true=None,
+        log_like=None,
         n_samples=1000,
         n_max=-1,
         neff_min=1,
@@ -706,7 +706,7 @@ class NBI:
         else:
             self.scheduler.step()
 
-    def _init_loader(self, data_container, batch_size, workers=0):
+    def _init_loader(self, data_container, batch_size, workers=4):
         train_container, val_container, test_container = data_container.get_splits()
 
         kwargs = {
