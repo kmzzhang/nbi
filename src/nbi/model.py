@@ -54,20 +54,7 @@ class Flow(nn.Module):
             return neg_log_probs, entropy
 
 
-def get_featurizer(
-    network_type,
-    config
-    # raw_dim,
-    # num_cond_inputs,
-    # depth=9,
-    # resnet_layer=2,
-    # kernel=3,
-    # resnet_hidden=32,
-    # resnet_max_hidden=256,
-    # maxpool_size=2,
-    # norm="weight_norm",
-    # dropout_rnn=0.15,
-):
+def get_featurizer(network_type, config):
     # if network_type == "resnet":
     #     featurizer = ResNetLinear(
     #         raw_dim,
@@ -94,20 +81,20 @@ def get_featurizer(
     #         aux=0,
     #     )
     # else:
-    if network_type == 'sequence':
+    if network_type == "sequence":
         return ResNetRNN(
-            config['dim_in'],
-            config['dim_out'],
-            depth=config['depth'],
-            kernel_size=config.pop('kernel', 3),
-            hidden_conv=config.pop('dim_conv_min', 32),
-            max_hidden=config.pop('dim_conv_max', 256),
+            config["dim_in"],
+            config["dim_out"],
+            depth=config["depth"],
+            kernel_size=config.pop("kernel", 3),
+            hidden_conv=config.pop("dim_conv_min", 32),
+            max_hidden=config.pop("dim_conv_max", 256),
         )
 
 
 def get_flow(
     featurizer,
-    dim_theta,
+    n_dims,
     flow_hidden,
     num_cond_inputs,
     num_blocks=5,
@@ -122,9 +109,9 @@ def get_flow(
 
     for i, _ in enumerate(range(num_blocks)):
         modules += [
-            flows.Shuffle(dim_theta, perm_seed + i),
+            flows.Shuffle(n_dims, perm_seed + i),
             MADE(
-                dim_theta,
+                n_dims,
                 flow_hidden,
                 num_cond_inputs,
                 shift_only=False,
@@ -135,9 +122,9 @@ def get_flow(
         ]
 
     modules += [
-        flows.Shuffle(dim_theta, perm_seed + num_blocks + 1),
+        flows.Shuffle(n_dims, perm_seed + num_blocks + 1),
         flows.MADEMOG(
-            dim_theta,
+            n_dims,
             flow_hidden,
             num_cond_inputs,
             n_components=n_mog,
@@ -149,7 +136,7 @@ def get_flow(
     ]
     flow = flows.FlowSequentialMOG(*modules)
     flow.init(n_mog)
-    flow.set_num_inputs(dim_theta)
+    flow.set_num_inputs(n_dims)
 
     for module in flow.modules():
         if isinstance(module, nn.Linear):
@@ -159,20 +146,3 @@ def get_flow(
 
     full_model = Flow(featurizer, flow)
     return full_model
-
-
-if __name__ == "__main__":
-    dim_param = 3
-
-    flow_config = {
-        "flow_hidden": 512,
-        "num_cond_inputs": 512,
-        "num_blocks": 20,
-        "perm_seed": 3,
-        "n_mog": 4,
-    }
-
-    # nbi has different featurizers pre-defined
-    # light-curve problems: use resnetrnn
-    resnet = get_featurizer("resnetrnn", 1, 512, depth=6)
-    model = get_flow(resnet, dim_param, **flow_config)
