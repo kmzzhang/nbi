@@ -1,5 +1,5 @@
 import torch.nn as nn
-from .nn import flows, ResNetRNN, ResNetLinear, RNN
+from .nn import flows, ResNet, RNN
 
 
 class DataParallelFlow(nn.DataParallel):
@@ -81,16 +81,37 @@ def get_featurizer(network_type, config):
     #         aux=0,
     #     )
     # else:
-    if network_type == "sequence":
-        return ResNetRNN(
+    if network_type == "resnet1d-gru":
+        return ResNet(
             config["dim_in"],
             config["dim_out"],
             depth=config["depth"],
             kernel_size=config.pop("kernel", 3),
             hidden_conv=config.pop("dim_conv_min", 32),
             max_hidden=config.pop("dim_conv_max", 256),
+            rnn_layer=2
         )
-
+    elif network_type == "resnet1d":
+        return ResNet(
+            config["dim_in"],
+            config["dim_out"],
+            depth=config["depth"],
+            kernel_size=config.pop("kernel", 3),
+            hidden_conv=config.pop("dim_conv_min", 32),
+            max_hidden=config.pop("dim_conv_max", 256),
+            rnn_layer=0
+        )
+    elif network_type == "gru":
+        return RNN(
+            config["dim_in"],
+            hidden_rnn=config["dim_hidden"],
+            num_layers=config["depth"],
+            num_class=config["dim_out"],
+            hidden=config["dim_out"],
+            dropout_rnn=0.15,
+            bidirectional=False,
+            rnn="GRU"
+        )
 
 def get_flow(
     featurizer,

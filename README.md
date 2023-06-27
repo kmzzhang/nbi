@@ -2,13 +2,14 @@
 
 ## nbi: neural bayesian inference
 
-Do you have challanging inference problems that are difficult to solve with the standard MCMC or Nested Sampling codes?
+Do you have challanging inference problems that are difficult to solve with standard MCMC or Nested Sampling methods?
 Are you looking to fit the same forward model to thousands or millions of observed datasets?
 `nbi` may be your solution. 
 
-`nbi` is a simulation-based inference engine designed as a straightforward substitution for your favorite MCMC or Nested
-Sampling packages. It is great for solving challanging inference problems as well as batch inference problems.
-It implements a custom neural posterior estimation algorithm that integrates importance sampling, which allows for
+`nbi` is an engine for Neural Posterior Estimation (NPE) focused on out-of-the-box application to common astronomical data,
+such as light curves and spectra.
+Compared to related packages, `nbi` requires minimal customization and can easily substitute for
+It also implements a custom NPE algorithm that integrates importance sampling, which allows for
 efficient, asymptotically exact results.
 
 ## Installation
@@ -16,8 +17,7 @@ efficient, asymptotically exact results.
 To install this package, we recommend that you create a dedicated `conda` environment with Python 3.7 or higher
 
 ```bash
-conda create -n nbi python=3.10
-conda activate nbi
+conda create -n nbi python=3.10 && conda activate nbi
 ```
 
 Then `pip` install this package
@@ -26,39 +26,60 @@ Then `pip` install this package
 pip install nbi
 ```
 
-or directly from GitHub for the latest version:
+## Quick Start
 
-```bash
-git clone https://github.com/kmzzhang/nbi && cd nbi
-pip install .
+The `examples/` directory contains complete examples that demonstrates the functionality of `nbi`. A bare-bone
+example below illustrates the basic API, which follows the scikit-learn style:
+
+```python
+import nbi
+
+# specify hyperparameters
+flow = {
+    "n_dims": 1,
+    "flow_hidden": 32,
+    "num_blocks": 4
+}
+featurizer = {
+    "type": "resnet-gru",
+    "dim_in": 1,
+    "depth": 3
+}
+engine = nbi.NBI(
+    flow,
+    featurizer,
+    simulator,
+    noise,
+    priors
+)
+engine.fit(
+    n_sims=1000,
+    n_rounds=1,
+    n_epochs=100
+)
+y_pred, weights = engine.predict(x_obs, x_err, n_samples=2000)
 ```
 
-## Usage
+## References
 
-See the `examples/` directory for Jupyter notebooks showing the basic functionality of the package.
+nbi: the Astronomer's Package for Neural Posterior Estimation (Zhang et al. 2023)
+ - Accepted to the "Machine Learning for Astrophysics" workshop at the 
+International Conference for Machine Learning (ICML). Link to the paper will be updated here.
 
-## Contributing
+Masked Autoregressive Flow for Density Estimation (Papamakarios et al. 2017)\
+https://arxiv.org/abs/1705.07057
 
-nbi is released under the BSD license. We encourage you to modify it, reuse it, and contribute changes back for the benefit of others. We follow standard open source development practices: changes are submitted as pull requests and, once they pass the test suite, reviewed by the team before inclusion. 
+Featurizers: ResNet (He et al. 2015; https://arxiv.org/abs/1512.03385), Gated Recurrent Units
+(GRU; Cho et al. 2014; https://arxiv.org/abs/1406.1078), 
+ResNet-GRU (Zhang et al. 2021; https://iopscience.iop.org/article/10.3847/1538-3881/abf42e)
 
-To contribute back via pull requests, please first fork this report and make sure that you add the original repo as the `upstream` remote:
 
-```bash
-git remote add upstream https://github.com/kmzzhang/nbi.git
-```
-When you are ready to submit a PR push to your fork:
-
-```bash
-git push -u origin <your_local_branch_with_changes_name>
-```
-
-Then create a PR back to `upstream`:
-
-```
-https://github.com/<your_username>/nbi/pull/new/<your_local_branch_with_changes_name>
-```
 
 ## Acknowledgments
+The `nbi` package is expanded from code originally written for *''Real-time Likelihood-free Inference of Roman Binary Microlensing Events
+with Amortized Neural Posterior Estimation'''* ([Zhang et al. 2021](https://iopscience.iop.org/article/10.3847/1538-3881/abf42e)).
+The Masked Autoregressive Flow in this package is partly adapted from the implementation in
+https://github.com/kamenbliznashki/normalizing_flows.
 Work on this project was supported by the [National Science Foundation award #2206744](https://www.nsf.gov/awardsearch/showAward?AWD_ID=2206744&HistoricalAwards=false) ("CDS&E: Accelerating Astrophysical Insight at Scale with Likelihood-Free Inference").
 
-<center><img src="https://www.nsf.gov/policies/images/NSF_Official_logo.svg" width="20%"></center>
+<center><img src="https://www.nsf.gov/policies/images/NSF_Official_logo.svg" width="10%"></center>
