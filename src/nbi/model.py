@@ -55,33 +55,7 @@ class Flow(nn.Module):
 
 
 def get_featurizer(network_type, config):
-    # if network_type == "resnet":
-    #     featurizer = ResNetLinear(
-    #         raw_dim,
-    #         num_cond_inputs,
-    #         depth=depth,
-    #         nlayer=resnet_layer,
-    #         kernel_size=kernel,
-    #         hidden_conv=resnet_hidden,
-    #         max_hidden=resnet_max_hidden,
-    #         maxpool_size=maxpool_size,
-    #         norm=norm,
-    #     )
-    # elif network_type == "rnn":
-    #     featurizer = RNN(
-    #         raw_dim,
-    #         hidden_rnn=num_cond_inputs,
-    #         num_layers=depth,
-    #         num_class=num_cond_inputs,
-    #         hidden=num_cond_inputs,
-    #         dropout_rnn=0.15,
-    #         dropout=0,
-    #         bidirectional=False,
-    #         rnn="GRU",
-    #         aux=0,
-    #     )
-    # else:
-    if network_type == "resnet1d-gru":
+    if network_type == "resnet-gru":
         return ResNet(
             config["dim_in"],
             config["dim_out"],
@@ -91,7 +65,7 @@ def get_featurizer(network_type, config):
             max_hidden=config.pop("dim_conv_max", 256),
             rnn_layer=2
         )
-    elif network_type == "resnet1d":
+    elif network_type == "resnet":
         return ResNet(
             config["dim_in"],
             config["dim_out"],

@@ -42,19 +42,16 @@ class RNN(nn.Module):
                 self.linear1, self.dropout, self.relu, self.linear2
             )
         else:
-            self.linear = nn.Linear(hidden, num_class)
-            self.linear = nn.Sequential(self.linear)
+            self.linear = nn.Linear(hidden_rnn, num_class)
 
     def forward(self, x, aux=None):
         # N, C, L --> L, N, H0
         x = x.permute(2, 0, 1)
-        code = self.encoder(x)[1] if self.rnn == "GRU" else self.encoder(x)[1][0]
-        # N, H0*(2)
-        if self.bidirectional:
-            feature = torch.cat((code[-1], code[-2]), dim=1)
-        else:
-            feature = code[-1]
+        code = self.encoder(x)[1]
+        feature = torch.cat((code[-1], code[-2]), dim=1) if self.bidirectional else code[-1]
+
         if self.aux > 0:
             feature = torch.cat((feature, aux), dim=1)
+
         logprob = self.linear(feature)
         return logprob

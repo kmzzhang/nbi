@@ -244,6 +244,9 @@ class NBI:
             self.save_current_state()
             self.round += 1
 
+            if n_rounds == 1:
+                return
+
             self.prepare_data(x_obs, n_sims)
 
             if self.round > 0 and plot:
@@ -575,39 +578,38 @@ class NBI:
         np.random.seed(self.epoch)
         self.network.train()
         train_loss = list()
-        pbar = self.tqdm(total=len(self.train_loader.dataset))
-        for batch_idx, data in enumerate(self.train_loader):
-            if len(data) == 2:
-                x, y = data
-                aux = None
-            else:
-                x, y, aux = data
-                aux = aux.type(self.dtype)
-            x = self.scale_x(x).type(self.dtype)
-            y = self.scale_y(y).type(self.dtype)
-            self.optimizer.zero_grad()
-            loss = self.network(x, y, aux=aux)
-            loss = loss.mean()
-            train_loss.append(loss.item())
-            loss.backward()
-            if self.clip > 0:
-                self.norm.append(
-                    torch.nn.utils.clip_grad_norm_(
-                        self.network.parameters(), self.prev_clip
-                    ).cpu()
-                )
-            self.optimizer.step()
+        with self.tqdm(total=len(self.train_loader.dataset)) as pbar:
+            for batch_idx, data in enumerate(self.train_loader):
+                if len(data) == 2:
+                    x, y = data
+                    aux = None
+                else:
+                    x, y, aux = data
+                    aux = aux.type(self.dtype)
+                x = self.scale_x(x).type(self.dtype)
+                y = self.scale_y(y).type(self.dtype)
+                self.optimizer.zero_grad()
+                loss = self.network(x, y, aux=aux)
+                loss = loss.mean()
+                train_loss.append(loss.item())
+                loss.backward()
+                if self.clip > 0:
+                    self.norm.append(
+                        torch.nn.utils.clip_grad_norm_(
+                            self.network.parameters(), self.prev_clip
+                        ).cpu()
+                    )
+                self.optimizer.step()
 
-            pbar.update(x.shape[0])
-            pbar.set_description(
-                "Epoch {:d}: Train, Loglike in nats: {:.6f}".format(
-                    self.epoch, -np.mean(train_loss)
+                pbar.update(x.shape[0])
+                pbar.set_description(
+                    "Epoch {:d}: Train, Loglike in nats: {:.6f}".format(
+                        self.epoch, -np.mean(train_loss)
+                    )
                 )
-            )
 
         if self.clip > 0:
             self.prev_clip = np.percentile(np.array(self.norm), self.clip)
-        pbar.close()
         train_loss = np.array(train_loss).mean()
         self.tloss.append(train_loss)
 
@@ -615,26 +617,24 @@ class NBI:
         np.random.seed(0)
         self.network.eval()
         val_loss = list()
-        pbar = self.tqdm(total=len(self.valid_loader.dataset))
-        pbar.set_description("Eval")
-        objs = 0
-        for batch_idx, data in enumerate(self.valid_loader):
-            x, y = data
-            x = self.scale_x(x).type(self.dtype)
-            y = self.scale_y(y).type(self.dtype)
-            objs += x.shape[0]
-            self.optimizer.zero_grad()
-            with torch.no_grad():
-                loss = self.network(x, y).mean()
-                val_loss.append(loss.detach().cpu().numpy())
-            pbar.update(x.shape[0])
-            pbar.set_description(
-                "- Val, Loglike in nats: {:.6f}".format(
-                    -np.sum(val_loss) / (batch_idx + 1)
+        with self.tqdm(total=len(self.valid_loader.dataset)) as pbar:
+            objs = 0
+            for batch_idx, data in enumerate(self.valid_loader):
+                x, y = data
+                x = self.scale_x(x).type(self.dtype)
+                y = self.scale_y(y).type(self.dtype)
+                objs += x.shape[0]
+                self.optimizer.zero_grad()
+                with torch.no_grad():
+                    loss = self.network(x, y).mean()
+                    val_loss.append(loss.detach().cpu().numpy())
+                pbar.update(x.shape[0])
+                pbar.set_description(
+                    "- Val, Loglike in nats: {:.6f}".format(
+                        -np.sum(val_loss) / (batch_idx + 1)
+                    )
                 )
-            )
 
-        # pbar.close()
         val_loss = np.array(val_loss)
         val_loss = val_loss[val_loss < np.percentile(val_loss, 90)].mean()
         pbar.set_description("- Val, Loglike in nats: {:.6f}".format(-val_loss))
