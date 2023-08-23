@@ -101,8 +101,8 @@ class NBI:
             featurizer = get_featurizer(featurizer.pop("type"), featurizer)
             flow_config_all["num_cond_inputs"] = featurizer.num_outputs
 
-        self.network = get_flow(featurizer, **flow_config_all).to(self.device, dtype=torch.float32)
-        self.network = DataParallelFlow(self.network)
+        self.network = get_flow(featurizer, **flow_config_all)
+        self.network = DataParallelFlow(self.network).to(self.device, dtype=torch.float32)
 
         self.epoch = 0
         self.prev_clip = 50000
