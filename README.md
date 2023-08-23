@@ -2,55 +2,72 @@
 
 ## nbi: neural bayesian inference
 
-Do you have challanging inference problems that are difficult to solve with standard MCMC or Nested Sampling methods?
-Are you looking to fit the same forward model to thousands or millions of observed datasets?
+Do you have challanging inference problems that are difficult to solve with standard optimization and/or MCMC methods?
+Are you looking to fit the same forward model to thousands or millions of observed targets?
 `nbi` may be your solution. 
 
-`nbi` is an engine for Neural Posterior Estimation (NPE) focused on out-of-the-box application to common astronomical data,
-such as light curves and spectra.
-Compared to related packages, `nbi` requires minimal customization and can easily substitute for
-It also implements a custom NPE algorithm that integrates importance sampling, which allows for
-efficient, asymptotically exact results.
+`nbi` is an engine for Neural Posterior Estimation (NPE) focused on out-of-the-box functionality for astronomical data,
+particularly light curves and spectra.
+`nbi` provides effective embedding/featurizer networks for spectra and light-curve data, along
+with importance-sampling integration that enables asymptotically exact inference so that the inference results are
+interpretable and trustworthy.
 
 ## Installation
 
-To install this package, we recommend that you create a dedicated `conda` environment with Python 3.7 or higher
-
+You may either install `nbi` using `pip` or directly from source. As `nbi` is currently under active development,
+installing from source may be preferable at this stage.
 ```bash
-conda create -n nbi python=3.10 && conda activate nbi
+git clone https://github.com/kmzzhang/nbi.git
+cd nbi
+python setup.py install
+
+# or using pip for latest stable release
+pip install nbi
 ```
 
-Then `pip` install this package
-
+If you are using M1/M2 Mac **CPU**, you might want to install PyTorch from source and disable NNPACK, which is known to
+reduce performance (see [issue](https://github.com/pytorch/pytorch/issues/107534)).
 ```bash
-pip install nbi
+git clone --recursive https://github.com/pytorch/pytorch
+cd pytorch
+USE_NNPACK=0 python setup.py install
 ```
 
 ## Quick Start
 
 The `examples/` directory contains complete examples that demonstrates the functionality of `nbi`. A bare-bone
-example below illustrates the basic API, which follows the scikit-learn style:
+example below illustrates the basic API, which follows the scikit-learn style. The default featurizer network for
+sequential data is `resnet-gru`, which is a hybrid CNN-RNN architecture.
+
+Here are a rule of thumb for resnet-gru hyperparameters:
+* dim_in: this is your number of input data channels
+* depth: number of ResNet blocks. Start near log2(L)-5, where L is length of your sequential data.
+* max_hidden: Maximum hidden dimensions for ResNet. Hidden dimensions double (from hidden_conv=32 by default) every 
+  depth. At least a few times D^2, where D is the dimension of the physical parameter space.
 
 ```python
 import nbi
 
-# specify hyperparameters
-flow = {
-    "n_dims": 1,
-    "flow_hidden": 32,
-    "num_blocks": 4
-}
+# hyperparameters
 featurizer = {
     "type": "resnet-gru",
     "dim_in": 1,
-    "depth": 3
+    "max_hidden": 64
 }
+
+flow = {
+    "n_dims": 1,        # parameter space dimension
+    "flow_hidden": 32,  # generally no larger than max_hidden
+    "num_blocks": 10    # depends on complexity of posterior shape
+}
+
 engine = nbi.NBI(
     flow,
     featurizer,
     simulator,
     noise,
-    priors
+    priors,
+    device='cpu'        # 'cuda', 'cuda:0', 'mps' for M1/M2 Mac GPU
 )
 engine.fit(
     n_sims=1000,
@@ -60,11 +77,16 @@ engine.fit(
 y_pred, weights = engine.predict(x_obs, x_err, n_samples=2000)
 ```
 
+Note that currently the `MPS` backend (M1/M2 GPU) does not support weight normalization, 
+which is used by the ResNet-GRU network. You may specify 'norm': 'weight_norm' instead, although
+the performance has not been examined.
+
 ## References
 
-nbi: the Astronomer's Package for Neural Posterior Estimation (Zhang et al. 2023)
- - Accepted to the "Machine Learning for Astrophysics" workshop at the 
-International Conference for Machine Learning (ICML). Link to the paper will be updated here.
+nbi: the Astronomer's Package for Neural Posterior Estimation 
+([Zhang et al. 2023](https://ml4astro.github.io/icml2023/assets/71.pdf)). 
+Accepted to the "Machine Learning for Astrophysics" workshop at the 2023 
+International Conference for Machine Learning (ICML). Will be posted to arXiv soon.
 
 Masked Autoregressive Flow for Density Estimation (Papamakarios et al. 2017)\
 https://arxiv.org/abs/1705.07057

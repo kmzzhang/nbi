@@ -21,6 +21,7 @@ class RNN(nn.Module):
         super(type(self), self).__init__()
         self.bidirectional = bidirectional
         self.aux = aux
+        self.num_outputs = num_class
 
         network = rnns[rnn]
         self.rnn = rnn

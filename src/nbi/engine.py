@@ -6,14 +6,20 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 import corner
 import numpy as np
 import matplotlib.pyplot as plt
+import multiprocess as mp
 from multiprocess import Pool
 from tqdm import tqdm
 from tqdm.notebook import tqdm as tqdmn
 
 import torch
 import torch.optim as optim
-import torch.utils.data
+
+# this seems to be required for some environments
+from torch.utils.data import dataloader
+dataloader.multiprocessing = mp
+
 from torch.utils.data import DataLoader
+
 from torch.optim.lr_scheduler import (
     ReduceLROnPlateau,
     MultiStepLR,
@@ -34,7 +40,6 @@ corner_kwargs = {
 
 default_flow_config = {
     "flow_hidden": 64,
-    "num_cond_inputs": 64,
     "num_blocks": 5,
     "perm_seed": 3,
     "n_mog": 1,
@@ -42,7 +47,7 @@ default_flow_config = {
 
 
 class NBI:
-    """Neural bayesian inference engine for astronomical data"""
+    """Neural Posterior Estimation for astronomical data"""
 
     def __init__(
         self,
@@ -50,7 +55,7 @@ class NBI:
         featurizer,
         simulator=None,
         priors=None,
-        idx_gpu=0,
+        device='cpu',
         path="test",
         n_jobs=1,
         labels=None,
@@ -62,10 +67,12 @@ class NBI:
 
         Parameters
         ----------
-        featurizer (nn.Module): pytorch network which maps input sequence of shape [Batch, Channel, Length] to
-                output feature vector of shape [Batch, Dimension]. See NBI.get_featurizer() for pre-defined ones.
-        dim_param (int): number of inferred parameters
-        simulator (callable): a function which takes (thetas, files)
+        flow (dict): dictionary containing flow hyperparameters. 'n_dims' keyword required for
+         parameter space dimension. default_flow_config contains default for other parameters that will be
+         used if not specified
+        featurizer (dict or nn.Module): pytorch network which maps input sequence of shape [Batch, Channel, Length] to
+                output feature vector of shape [Batch, Dimension].
+        simulator (callable):
         prior_sampler
         log_prior
         log_like
@@ -80,8 +87,8 @@ class NBI:
 
         # if labels is None and prior is None:
         #     raise AssertionError('Parameter name must be provided via labels when prior not supplied!')
-
-        self.init_env(idx_gpu)
+        self.device = device
+        self.init_env()
         flow_config_all = copy.copy(default_flow_config)
         flow_config_all.update(flow)
         corner_kwargs.update({"labels": labels})
@@ -91,10 +98,10 @@ class NBI:
         # if featurizer is not user provided pytorch module
         # generate featurizer network based on user specified type and hyperparameters
         if type(featurizer) == dict:
-            featurizer["dim_out"] = flow_config_all["num_cond_inputs"]
             featurizer = get_featurizer(featurizer.pop("type"), featurizer)
+            flow_config_all["num_cond_inputs"] = featurizer.num_outputs
 
-        self.network = get_flow(featurizer, **flow_config_all).type(self.dtype)
+        self.network = get_flow(featurizer, **flow_config_all).to(self.device, dtype=torch.float32)
         self.network = DataParallelFlow(self.network)
 
         self.epoch = 0
@@ -171,7 +178,7 @@ class NBI:
         decay_type="SGDR",
         plot=True,
         f_accept_min=-1,
-        workers=4,
+        workers=8,
     ):
         assert n_sims > 0 or y is not None
 
@@ -194,7 +201,8 @@ class NBI:
         self._init_wandb(project, wandb_enabled)
 
         if min_lr is None:
-            min_lr = lr / n_epochs
+            min_lr = min(lr, lr / (n_sims / batch_size * n_epochs) * 10)
+            print('Auto learning rate to min_lr =', min_lr)
 
         # for restarting training
         if len(self.x_all) == self.round:
@@ -391,18 +399,20 @@ class NBI:
 
         return weights
 
-    def init_env(self, idx_gpu):
+    def init_env(self):
         torch.manual_seed(0)
         np.random.seed(0)
-        self.dtype = (
-            torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
-        )
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed(0)
-            self.map_location = f"cuda:{idx_gpu}"
-            torch.cuda.set_device(idx_gpu)
-        else:
-            self.map_location = "cpu"
+        if self.device == 'mps':
+            try:
+                torch.mps.manual_seed(0)
+            except:
+                print('MPS not supported by current PyTorch installation. Reverting to CPU')
+                self.device = 'cpu'
+        elif 'cuda' in self.device:
+            if not torch.cuda.is_available():
+                print('CUDA not supported by current PyTorch installation. Reverting to CPU')
+            else:
+                torch.cuda.manual_seed(0)
 
     def get_network(self):
         if type(self.network) == DataParallelFlow:
@@ -417,7 +427,7 @@ class NBI:
         path_round = os.path.join(self.directory, str(self.round))
         path = os.path.join(path_round, str(epoch) + ".pth")
         self.get_network().load_state_dict(
-            torch.load(path, map_location=self.map_location)
+            torch.load(path, map_location=self.device)
         )
 
     def set_params(self, network, x_scale, y_scale):
@@ -431,7 +441,7 @@ class NBI:
         self.y_mean = y_scale[0]
         self.y_std = y_scale[1]
         self.get_network().load_state_dict(
-            torch.load(network, map_location=self.map_location)
+            torch.load(network, map_location=self.device)
         )
 
     def save_state_dict(self):
@@ -521,8 +531,9 @@ class NBI:
         return ys, weights
 
     def sample(self, x, y=None, n=5000, corner=False):
+        self.network.eval()
         x = self.scale_x(x)
-        x = torch.from_numpy(x).type(self.dtype)
+        x = torch.from_numpy(x).to(self.device, dtype=torch.float32)
         with torch.no_grad():
             # GPU memory control (make larger?)
             if n > 20000:
@@ -585,9 +596,9 @@ class NBI:
                     aux = None
                 else:
                     x, y, aux = data
-                    aux = aux.type(self.dtype)
-                x = self.scale_x(x).type(self.dtype)
-                y = self.scale_y(y).type(self.dtype)
+                    aux = aux.to(self.device, dtype=torch.float32)
+                x = self.scale_x(x).to(self.device, dtype=torch.float32)
+                y = self.scale_y(y).to(self.device, dtype=torch.float32)
                 self.optimizer.zero_grad()
                 loss = self.network(x, y, aux=aux)
                 loss = loss.mean()
@@ -621,8 +632,8 @@ class NBI:
             objs = 0
             for batch_idx, data in enumerate(self.valid_loader):
                 x, y = data
-                x = self.scale_x(x).type(self.dtype)
-                y = self.scale_y(y).type(self.dtype)
+                x = self.scale_x(x).to(self.device, dtype=torch.float32)
+                y = self.scale_y(y).to(self.device, dtype=torch.float32)
                 objs += x.shape[0]
                 self.optimizer.zero_grad()
                 with torch.no_grad():
@@ -701,6 +712,8 @@ class NBI:
             "num_workers": workers,
             "pin_memory": False,
             "drop_last": True,
+            # "multiprocessing_context": "forkserver",
+            'persistent_workers': True,
         }
 
         self.train_loader = DataLoader(
@@ -776,8 +789,8 @@ class NBI:
         x = self.scale_x(x)
         y = self.scale_y(y)
 
-        x = torch.from_numpy(x).type(self.dtype)
-        y = torch.from_numpy(y).type(self.dtype)
+        x = torch.from_numpy(x).to(self.device, dtype=torch.float32)
+        y = torch.from_numpy(y).to(self.device, dtype=torch.float32)
         with torch.no_grad():
             # it appears that DataParallal doesn't work properly here
             log_prob = self.network.module(x, y).cpu().numpy()[:, 0] * -1
