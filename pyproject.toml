@@ -16,6 +16,17 @@ classifiers = [
     "License :: OSI Approved :: BSD License",
     "Operating System :: OS Independent",
 ]
+dependencies = [
+    "torch>=1.4",
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "corner",
+    "joblib",
+    "pytest",
+    "tqdm",
+    "multiprocess"
+]
 
 [project.urls]
 "Homepage" = "https://github.com/kmzzhang/nbi"

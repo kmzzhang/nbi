@@ -14,15 +14,13 @@ interpretable and trustworthy.
 
 ## Installation
 
-You may either install `nbi` using `pip` or directly from source. As `nbi` is currently under active development,
+You may either install `nbi` with `pip install nbi` or directly from source. As `nbi` is currently under active development,
 installing from source may be preferable at this stage.
+
 ```bash
 git clone https://github.com/kmzzhang/nbi.git
 cd nbi
-python setup.py install
-
-# or using pip for latest stable release
-pip install nbi
+pip install .
 ```
 
 If you are using M1/M2 Mac **CPU**, you might want to install PyTorch from source and disable NNPACK, which is known to
