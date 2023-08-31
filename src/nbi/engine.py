@@ -1,53 +1,50 @@
 import os
-import copy
-
 os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
+
+import copy
+from tqdm import tqdm
+from tqdm.notebook import tqdm as tqdmn
+import multiprocess as mp
+from multiprocess import Pool
 
 import corner
 import numpy as np
 import matplotlib.pyplot as plt
-import multiprocess as mp
-from multiprocess import Pool
-from tqdm import tqdm
-from tqdm.notebook import tqdm as tqdmn
 
 import torch
 import torch.optim as optim
-
-# this seems to be required for some environments
-from torch.utils.data import dataloader
-dataloader.multiprocessing = mp
-
 from torch.utils.data import DataLoader
-
 from torch.optim.lr_scheduler import (
     ReduceLROnPlateau,
     MultiStepLR,
     CosineAnnealingWarmRestarts,
 )
 
+# this seems to be required for some environments
+from torch.utils.data import dataloader
+dataloader.multiprocessing = mp
+
 from .model import get_flow, DataParallelFlow, get_featurizer
 from .data import BaseContainer
 from .utils import parallel_simulate, iid_gaussian, log_like_iidg
 
-corner_kwargs = {
-    "quantiles": [0.16, 0.5, 0.84],
-    "show_titles": True,
-    "title_kwargs": {"fontsize": 16},
-    "fill_contours": True,
-    "levels": 1.0 - np.exp(-0.5 * np.arange(0.5, 2.6, 0.5) ** 2),
-}
-
-default_flow_config = {
-    "flow_hidden": 64,
-    "num_blocks": 5,
-    "perm_seed": 3,
-    "n_mog": 1,
-}
-
 
 class NBI:
-    """Neural Posterior Estimation for astronomical data"""
+
+    corner_kwargs = {
+        "quantiles": [0.16, 0.5, 0.84],
+        "show_titles": True,
+        "title_kwargs": {"fontsize": 16},
+        "fill_contours": True,
+        "levels": 1.0 - np.exp(-0.5 * np.arange(0.5, 2.6, 0.5) ** 2),
+    }
+
+    default_flow_config = {
+        "flow_hidden": 64,
+        "num_blocks": 5,
+        "perm_seed": 3,
+        "n_mog": 1,
+    }
 
     def __init__(
         self,
@@ -63,35 +60,85 @@ class NBI:
         network_reinit=False,
         scale_reinit=True,
     ):
-        """
+        """Initializes the Neural Bayesian Inference Engine.
+
+        NBI is an open-source software introduced to support both amortized and sequential Neural Posterior Estimation
+        (NPE) methods, particularly tailored for astronomical inference problems, such as those involving
+         light curves and spectra.
+
+        The design of NBIE addresses critical issues in the adaptation of NPE methods in astronomy. It provides built-in
+        "featurizer" networks with demonstrated efficacy on sequential data, removing the need for custom featurizer
+        networks by users. It also employs a modified algorithm, SNPE-IS, which enables asymptotically exact inference
+        by using the surrogate posterior under NPE as a proposal distribution for importance sampling.
+
 
         Parameters
         ----------
-        flow (dict): dictionary containing flow hyperparameters. 'n_dims' keyword required for
-         parameter space dimension. default_flow_config contains default for other parameters that will be
-         used if not specified
-        featurizer (dict or nn.Module): pytorch network which maps input sequence of shape [Batch, Channel, Length] to
-                output feature vector of shape [Batch, Dimension].
-        simulator (callable):
-        prior_sampler
-        log_prior
-        log_like
-        noise
-        flow_config
-        idx_gpu
-        parallel
-        directory
-        n_jobs
-        labels
+        flow : dict or nn.Module
+            Dictionary containing hyperparameters for the Masked Autoregressive Flow.
+            If dictionary, the keys include:
+                - 'n_dims', dimension of model parameter space.
+                - 'num_blocks', number of Masked Autoregressive Flow (MAF) blocks.
+                - 'flow_hidden', hidden dimension for each MAF block
+                - 'perm_seed', random seed for dimension permutation of each MAF block
+                - 'n_mog', number of mixture of Gaussians as the base density. Recommended > 1 for multi-model and/or
+                non-Gaussian posterior distributions. Rule of thumb: twice the maximum number of posterior modes.
+
+            Only 'n_dims' required. See class attribute default_flow_config for default values.
+
+            If nn.Module, it's a custom normalizing flow.
+
+        featurizer : dict or nn.Module
+            Dictionary of hyperparameters for the pre-built neural network for dimensionality reduction
+            or a custom PyTorch network module.
+
+            If dictionary, the keys include:
+                - 'type': Name of pre-built network architecture. Default: 'resnet-gru'.
+                - 'norm': Either 'weight_norm' or 'batch_norm'.
+                - 'dim_in': Number of input data channels.
+                - 'dim_out': Dimension of output feature vector.
+                - 'dim_conv_max': Maximum hidden dimensions of ResNet layers.
+                - 'depth': ResNet network depth.
+                - 'n_rnn': Number of GRU layers.
+
+            If nn.Module, it's a custom featurizer network that maps input sequence of shape [Batch, Channel, Length] to
+            output feature vector of shape [Batch, Dimension].
+
+        simulator : function, optional
+        Simulator function to generate data. Requires input of model parameters and returns simulated data.
+
+        priors : list of scipy.stats objects, optional
+        Prior distribution for Bayesian inference. If not provided, uniform prior is assumed.
+
+        device : {'cpu', 'cuda', 'mps'} str, optional
+            Device for neural network, default is 'cpu'.
+
+        path : str, optional
+            Path to save training set and model checkpoints.
+
+        n_jobs : int, optional
+            Number of parallel jobs for computation.
+
+        labels : list of str, optional
+            Names of parameters for inference. Must be in the same order as priors.
+
+        tqdm_notebook : bool, optional
+            If True, uses notebook version of tqdm for progress bars.
+
+        network_reinit : bool, optional
+            If True, re-initializes the network weights every round. Default is False, which often yield better results
+            than True.
+
+        scale_reinit : bool, optional
+            If True, re-initializes data pre-processing scales every round. Default is True.
+
         """
 
-        # if labels is None and prior is None:
-        #     raise AssertionError('Parameter name must be provided via labels when prior not supplied!')
         self.device = device
         self.init_env()
-        flow_config_all = copy.copy(default_flow_config)
+        flow_config_all = copy.copy(self.default_flow_config)
         flow_config_all.update(flow)
-        corner_kwargs.update({"labels": labels})
+        self.corner_kwargs.update({"labels": labels})
         self.network_reinit = network_reinit
         self.scale_reinit = scale_reinit
 
@@ -105,7 +152,7 @@ class NBI:
         self.network = DataParallelFlow(self.network).to(self.device, dtype=torch.float32)
 
         self.epoch = 0
-        self.prev_clip = 50000
+        self.prev_clip = 1e8
         self.tloss = list()
         self.vloss = list()
 
@@ -115,13 +162,12 @@ class NBI:
         self.y_std = None
         self.norm = list()
 
-        # self.draw_prior = prior_sampler
         self.prior = priors
         self.param_names = labels
         self.simulator = simulator
         self.directory = path
         self.n_jobs = n_jobs
-        self.obs = None
+        self.x_obs = None
         self.y_true = None
 
         self.x = None
@@ -180,6 +226,95 @@ class NBI:
         f_accept_min=-1,
         workers=8,
     ):
+        """
+        Fit the Neural Bayesian Inference Engine.
+
+        Trains the network based on provided data and parameters.
+
+        Parameters
+        ----------
+        x : ndarray of paths to individual simulations, optional
+            First round training simulations. Only required when simulation and prior not specified during engine
+            initialization.
+
+        y : ndarray of shape (N, D) where D is parameter space dimension, optional
+            First round training parameters. Only required when simulation and prior not specified during engine
+            initialization.
+
+        noise : ndarray or function, optional
+            Measurement error and/or data augmentation during training. Array of Gaussian errorbars for fixed
+             iid Gaussian noise. For ANPE, provide a function that takes in noiseless data and parameters (x, y) and
+             outputs the noisified data and parameters (x', y'), which is the last pre-processing step before feeding
+             into the neural network.
+
+        log_like : function, optional
+            Log-likelihood function that takes in (x, x_path, y) and returns the log likelihood.
+            Required for importance sampling (SNPE) but not required when noise is iid Gaussian and specified
+            as an errorbar array.
+
+        n_epochs : int, optional
+            Number of training epochs.
+
+        n_rounds : int, optional
+            Number of training rounds.
+
+        n_sims : int, optional
+            Number of simulations.
+
+        x_obs : ndarray, optional
+            Observed data.
+
+        y_true : ndarray, optional
+            True target values.
+
+        n_reuse : int, optional
+            Number of previous round training data to be reused for the current round.
+
+        batch_size : int, optional
+            Batch size for training and validation.
+
+        project : str, optional
+            Name of the project for logging.
+
+        wandb_enabled : bool, optional
+            If True, enables wandb logging.
+
+        neff_stop : int, optional
+            Early stopping criteria based on Effective Sample Size (ESS). Terminate inference when ESS exceeds this
+            value.
+
+        early_stop_train : bool, optional
+            If True, terminates inference when the surrogate posterior (as measured by the ESS) does not improve for the current round.
+
+        early_stop_patience : int, optional
+            Number of epochs without improvement to trigger early stopping.
+
+        f_val : float, optional
+            Fraction of data to use for validation. Default: 0.1
+
+        lr : float, optional
+            Learning rate. Default: 0.001
+
+        min_lr : float, optional
+            Minimum learning rate for learning rate decay. Automatically calculated when not specified.
+
+        decay_type : {'SGDR'} str, optional
+            Type of learning rate decay. Default is Cosine annealing decay ("SGDR").
+
+        plot : bool, optional
+            If True, plots results after training.
+
+        f_accept_min : float, optional
+            Minimum round sampling efficiency (defined as the ratio from the effective sample size to the total sample
+            size) to terminate inference early.
+
+        workers : int, optional
+            Number of workers for data loading.
+
+        Returns
+        -------
+
+        """
         assert n_sims > 0 or y is not None
 
         if type(noise) == np.ndarray:
@@ -192,7 +327,7 @@ class NBI:
             self.like = log_like
 
         self.n_epochs = n_epochs
-        self.obs = x_obs
+        self.x_obs = x_obs
         self.y_true = y_true
 
         self.x = x
@@ -219,7 +354,6 @@ class NBI:
 
             self._init_train(lr)
             self._init_scheduler(min_lr, decay_type=decay_type)
-
             x_round, y_round = self.get_round_data(n_reuse)
             data_container = BaseContainer(
                 x_round, y_round, f_test=0, f_val=f_val, process=self.process
@@ -263,13 +397,13 @@ class NBI:
             # early stopping
             if np.sum(self.neff) > neff_stop > 0:
                 print("Success: Exceed specified stopping sample size!")
-                self.corner_all(x_obs, y_true)
+                self._corner_all()
                 return
 
             f_accept_round = self.neff[-1] / n_sims
             if self.neff[-1] / n_sims > f_accept_min > 0:
                 print("Success: Sampling efficiency is {:.1f}!".format(f_accept_round))
-                self.corner_all(x_obs, y_true)
+                self._corner_all()
                 return
 
             if early_stop_train and self.round > 1:
@@ -281,9 +415,16 @@ class NBI:
                     return
 
         if x_obs is not None:
-            self.corner_all(x_obs, y_true)
+            self._corner_all()
 
     def save_current_state(self):
+        """
+        Saves the network state from current round.
+
+        Returns
+        -------
+
+        """
         prev_state = self.get_state_dict()
         self.prev_state.append(prev_state)
         self.prev_x_mean.append(self.x_mean)
@@ -292,6 +433,17 @@ class NBI:
         self.prev_y_std.append(self.y_std)
 
     def load_prev_state(self, round):
+        """
+        Load state of the engine from a previous round.
+        Parameters
+        ----------
+        round : int
+            Round number to load state from.
+
+        Returns
+        -------
+
+        """
         print("Loaded state from round ", round)
         self.get_network().load_state_dict(self.prev_state[round])
         self.x_mean = self.prev_x_mean[round]
@@ -299,12 +451,33 @@ class NBI:
         self.y_mean = self.prev_y_mean[round]
         self.y_std = self.prev_y_std[round]
 
-    def corner_all(self, x_obs, y_true):
+    def _corner_all(self):
+        """
+        SNPE: Corner plot for the reweighted posterior from all rounds.
+
+        Returns
+        -------
+
+        """
         print("reweighted posterior from all rounds")
         all_thetas, all_weights = self.result()
-        self.corner(x_obs, all_thetas, y_true=y_true, weights=all_weights)
+        self.corner(self.x_obs, all_thetas, y_true=self.y_true, weights=all_weights)
 
     def prepare_data(self, x_obs, n_sims):
+        """
+        Generate training data for the current round.
+        Parameters
+        ----------
+        x_obs : ndarray
+            Observed data for producing simulations.
+        n_sims : int
+            Number of simulations.
+
+        Returns
+        -------
+
+        """
+
         ys = self._draw_params(x_obs, n_sims)
 
         np.save(os.path.join(self.directory, str(self.round)) + "_y_all.npy", ys)
@@ -327,17 +500,41 @@ class NBI:
                 "Effective sample size for current/all rounds",
                 "%.1f/%.1f" % (neff, np.sum(self.neff)),
             )
-            # print("Effective sample size for all rounds: ", "%.1f" % np.sum(self.neff))
 
     def weighted_corner(self, x_obs, y_true):
+        """
+        SNPE: Reweighted corner plot for the current round.
+        Parameters
+        ----------
+        x_obs : ndarray
+            Observed data.
+        y_true : ndarray
+            True parameters, if known.
+
+        Returns
+        -------
+
+        """
         try:
-            # print("reweighted posterior from current round")
             self.corner(x_obs, self.y_all[-1], y_true=y_true, weights=self.weights[-1])
 
         except:
             print("corner plot failed")
 
     def stop_training(self, patience=1):
+        """
+        Early stopping criteria based on validation loss.
+        Parameters
+        ----------
+        patience : int
+            Number of epochs without improvement to trigger early stopping.
+
+        Returns
+        -------
+        bool
+            True if early stopping criteria is met.
+
+        """
         if self.epoch < patience + 2 or patience == -1:
             return False
 
@@ -346,6 +543,16 @@ class NBI:
         return (prev_losses > base_loss).all()
 
     def result(self):
+        """
+        SNPE: Returns the reweighted posterior from all rounds.
+
+        Returns
+        -------
+            all_thetas : ndarray
+                Parameter values from all rounds.
+            all_weights: ndarray
+                Importance weights from all rounds.
+        """
         all_weights = np.concatenate(
             [self.weights[i] * self.neff[i] for i in range(self.round + 1)]
         )
@@ -355,6 +562,21 @@ class NBI:
         return all_thetas, all_weights
 
     def get_round_data(self, n_reuse):
+        """
+        Returns training data for the current round.
+        Parameters
+        ----------
+        n_reuse : int
+            Number of previous round training data to be reused for the current round.
+
+        Returns
+        -------
+        x_round : ndarray
+            Training data for the current round.
+        y_round : ndarray
+            Training parameters for the current round.
+
+        """
         if n_reuse == -1:
             return np.concatenate(self.x_all), np.concatenate(self.y_all)
         else:
@@ -367,6 +589,23 @@ class NBI:
             return x_round, y_round
 
     def importance_reweight(self, x_obs, x, y):
+        """
+        SNPE: Calculate importance reweights for the current round.
+        Parameters
+        ----------
+        x_obs : ndarray
+            Observed data.
+        x : ndarray
+            Simulated data.
+        y : ndarray
+            Simulated parameters.
+
+        Returns
+        -------
+        weights : ndarray
+            Importance weights.
+
+        """
         if self.like is None or x_obs is None:
             return None
 
@@ -386,6 +625,22 @@ class NBI:
         return weights
 
     def importance_reweight_like_only(self, x_obs, x, y):
+        """
+        SNPE: Calculate importance reweights for the current round, using only the likelihood.
+        Parameters
+        ----------
+        x_obs : ndarray
+            Observed data.
+        x : ndarray
+            Simulated data.
+        y : ndarray
+            Simulated parameters.
+
+        Returns
+        -------
+        weights : ndarray
+
+        """
         if self.like is None or x_obs is None:
             return None
 
@@ -400,6 +655,13 @@ class NBI:
         return weights
 
     def init_env(self):
+        """
+        Initialize environment for training.
+
+        Returns
+        -------
+
+        """
         torch.manual_seed(0)
         np.random.seed(0)
         if self.device == 'mps':
@@ -415,15 +677,43 @@ class NBI:
                 torch.cuda.manual_seed(0)
 
     def get_network(self):
+        """
+        Returns the network module without DataParallel wrapper, if any.
+
+        Returns
+        -------
+        nn.Module
+            Network module without the DataParallel wrapper.
+
+        """
         if type(self.network) == DataParallelFlow:
             return self.network.module
         else:
             return self.network
 
     def get_state_dict(self):
+        """
+        Returns the current network state dictionary.
+
+        Returns
+        -------
+
+        """
         return copy.deepcopy(self.get_network().state_dict())
 
     def load_state_dict(self, epoch):
+        """
+        Loads the network state dictionary from a previous epoch.
+
+        Parameters
+        ----------
+        epoch : int
+            Epoch number to load state from.
+
+        Returns
+        -------
+
+        """
         path_round = os.path.join(self.directory, str(self.round))
         path = os.path.join(path_round, str(epoch) + ".pth")
         self.get_network().load_state_dict(
@@ -431,6 +721,22 @@ class NBI:
         )
 
     def set_params(self, network, x_scale, y_scale):
+        """
+        Load engine parameters from disk, including network weights and data pre-processing scales.
+
+        Parameters
+        ----------
+        network : str
+            Path of network state dict.
+        x_scale : str or ndarray
+            Path of x-scale or x-scale array.
+        y_scale : str or ndarray
+            Path of y-scale or y-scale array.
+
+        Returns
+        -------
+
+        """
         if type(x_scale) == str:
             x_scale = np.load(x_scale)
         if type(y_scale) == str:
@@ -445,6 +751,13 @@ class NBI:
         )
 
     def save_state_dict(self):
+        """
+        Saves the network weights and pre-processing scales to disk
+
+        Returns
+        -------
+
+        """
         path_round = os.path.join(self.directory, str(self.round))
         path_network = os.path.join(path_round, str(self.epoch) + ".pth")
         torch.save(self.get_state_dict(), path_network)
@@ -455,6 +768,20 @@ class NBI:
         np.save(path_yscales, np.array([self.y_mean, self.y_std]))
 
     def scale_y(self, y, back=False):
+        """
+        Scale parameters to zero mean and unit variance, and vice versa
+
+        Parameters
+        ----------
+        y : ndarray
+            Parameters to be scaled.
+        back : bool, optional
+            If True, scales parameters back to original values.
+
+        Returns
+        -------
+
+        """
         if back:
             return y * self.y_std + self.y_mean
         else:
@@ -463,6 +790,19 @@ class NBI:
             return (y - self.y_mean) / self.y_std
 
     def scale_x(self, x, back=False):
+        """
+        Scale data to zero mean and unit variance, and vice versa.
+        Parameters
+        ----------
+        x : ndarray
+            Data to be scaled.
+        back : bool, optional
+            If True, scales data back to original values.
+
+        Returns
+        -------
+
+        """
         if back:
             return x * self.x_std + self.x_mean
         else:
@@ -479,11 +819,45 @@ class NBI:
         y_true=None,
         log_like=None,
         n_samples=1000,
+        neff_min=0,
         n_max=-1,
-        neff_min=1,
         corner=False,
         corner_reweight=False,
     ):
+        """
+        Generates the posterior distribution of parameters given input data.
+
+        Parameters
+        ----------
+        x : ndarray
+            Input data for inference
+        x_err : ndarray, optional
+            Measurement error for input data. Required for importance sampling. If not specified, use log_like instead.
+        y_true : ndarray, optional
+            True parameters, if known.
+        log_like : function, optional
+            Log-likelihood function that takes in (x, x_path, y) and returns the log likelihood. Required for importance
+            sampling when x_err not specified.
+        n_samples : int, optional
+            Number of posterior samples to generate.
+        neff_min : int, optional
+            Minimum effective sample size required. If neff_min > n_samples, additional simulations will be generated
+            until an ESS of neff_min is reached. Default: 0
+        n_max : int, optional
+            Maximum number of simulations to generate to achieve neff_min.
+        corner : bool, optional
+            If True, generates a corner plot of the posterior before reweighting.
+        corner_reweight : bool, optional
+            If True, generates a corner plot of the posterior after reweighting.
+
+        Returns
+        -------
+        ys : ndarray
+            Posterior samples.
+        weights : ndarray
+            Importance weights.
+
+        """
         self.like = log_like_iidg(x_err) if type(x_err) == np.ndarray else log_like
 
         if self.round == 0:
@@ -531,6 +905,26 @@ class NBI:
         return ys, weights
 
     def sample(self, x, y=None, n=5000, corner=False):
+        """
+        Generates samples from the surrogate posterior.
+
+        Parameters
+        ----------
+        x : ndarray
+            Input data for inference
+        y : ndarray, optional
+            True parameters (for corner plot), if known.
+        n : int, optional
+            Number of samples to generate.
+        corner : bool, optional
+            If True, generates a corner plot of the surrogate posterior samples.
+
+        Returns
+        -------
+        samples : ndarray
+            Samples from the surrogate posterior.
+
+        """
         self.network.eval()
         x = self.scale_x(x)
         x = torch.from_numpy(x).to(self.device, dtype=torch.float32)
@@ -549,6 +943,20 @@ class NBI:
         return samples
 
     def simulate(self, thetas):
+        """
+        Generates simulations for provided parameters, which are saved to disk. An array containing paths to the
+         simulations is returned.
+
+        Parameters
+        ----------
+        thetas : ndarray
+            Parameters to generate simulations for.
+
+        Returns
+        -------
+        x_path : ndarray
+            Paths to generated simulations.
+        """
         path_round = os.path.join(self.directory, str(self.round))
         try:
             os.mkdir(path_round)
@@ -586,6 +994,13 @@ class NBI:
             return paths, masks
 
     def _train_step(self):
+        """
+        Single training step.
+
+        Returns
+        -------
+
+        """
         np.random.seed(self.epoch)
         self.network.train()
         train_loss = list()
@@ -625,6 +1040,13 @@ class NBI:
         self.tloss.append(train_loss)
 
     def _validate_step(self):
+        """
+        Single validation step.
+
+        Returns
+        -------
+
+        """
         np.random.seed(0)
         self.network.eval()
         val_loss = list()
@@ -652,6 +1074,20 @@ class NBI:
         self.vloss.append(val_loss)
 
     def _init_wandb(self, project, enable):
+        """
+        Initialize weights & biases logging.
+
+        Parameters
+        ----------
+        project : str
+            Project name.
+        enable : bool
+            If True, enable weights & biases logging.
+
+        Returns
+        -------
+
+        """
         self.wandb = enable
         if enable:
             try:
@@ -664,12 +1100,25 @@ class NBI:
             wandb.watch(self.network)
 
     def _init_train(self, lr, clip=85):
+        """
+        Initialize training environment.
+
+        Parameters
+        ----------
+        lr : float
+            Learning rate.
+        clip : [0, 100] float, optional
+            Gradient clipping percentile for each epoch. If 0, no clipping is performed.
+
+        Returns
+        -------
+
+        """
         self.clip = clip
         if self.network_reinit:
             self.get_network().load_state_dict(self.state_dict_0)
         self.optimizer = optim.Adam(self.network.parameters(), lr=lr)
 
-        self.prev_clip = 1e8
         torch.manual_seed(0)
         self.training_losses = list()
         self.validation_losses = list()
@@ -677,6 +1126,24 @@ class NBI:
     def _init_scheduler(
         self, min_lr, decay_type="SGDR", patience=5, decay_threshold=0.01
     ):
+        """
+        Initialize learning rate scheduler.
+
+        Parameters
+        ----------
+        min_lr : float
+            Minimum learning rate.
+        decay_type : str, optional
+            Learning rate decay type. Options: "SGDR", "plateau", or a comma-separated list/string of epochs to decay at.
+        patience : int, optional
+            plateau: Number of epochs without improvement to trigger learning rate decay.
+        decay_threshold : float, optional
+            plateau: Threshold for measuring the new optimum, to only focus on significant changes.
+
+        Returns
+        -------
+
+        """
         self.decay_type = decay_type
         if decay_type == "plateau":
             self.scheduler = ReduceLROnPlateau(
@@ -700,19 +1167,41 @@ class NBI:
             )
 
     def _step_scheduler(self):
+        """
+        Step learning rate scheduler.
+
+        Returns
+        -------
+
+        """
         if self.decay_type == "plateau":
             self.scheduler.step(self.training_losses[-1])
         else:
             self.scheduler.step()
 
     def _init_loader(self, data_container, batch_size, workers=4):
+        """
+        Initialize data loader.
+
+        Parameters
+        ----------
+        data_container : DataContainer
+            Data container object.
+        batch_size : int
+            Batch size.
+        workers : int, optional
+            Number of workers for data loader.
+
+        Returns
+        -------
+
+        """
         train_container, val_container, test_container = data_container.get_splits()
 
         kwargs = {
             "num_workers": workers,
             "pin_memory": False,
             "drop_last": True,
-            # "multiprocessing_context": "forkserver",
             'persistent_workers': True,
         }
 
@@ -726,6 +1215,20 @@ class NBI:
             self._init_scales()
 
     def _draw_params(self, x, n):
+        """
+        Draw parameters from prior (ANPE or SNPE first round) or surrogate posterior.
+
+        Parameters
+        ----------
+        x : ndarray
+            Input data for inference.
+        n : int
+            Number of parameters to draw.
+
+        Returns
+        -------
+
+        """
         # first round: precomputed data or draw from prior
         if self.round == 0:
             if self.y is not None:
@@ -746,6 +1249,13 @@ class NBI:
             return params
 
     def _init_scales(self):
+        """
+            Calculate data pre-processing scales from the current round training data.
+
+        Returns
+        -------
+
+        """
         x_list = list()
         y_list = list()
         n = 0
@@ -768,6 +1278,20 @@ class NBI:
         self.y_std = y_list.std(0, keepdims=True)
 
     def log_prior(self, y):
+        """
+        Calculate log prior probability.
+
+        Parameters
+        ----------
+        y : ndarray
+            Parameters to calculate prior for.
+
+        Returns
+        -------
+        log_prob : ndarray
+            Log prior probability.
+
+        """
         if self.prior is None:
             return np.zeros(len(y))
         else:
@@ -777,12 +1301,46 @@ class NBI:
         return log_prob
 
     def log_like(self, x_obs, x, y):
+        """
+        Calculate log likelihood.
+
+        Parameters
+        ----------
+        x_obs : ndarray
+            Observed data.
+        x : ndarray
+            Simulated data.
+        y : ndarray
+            Simulated parameters.
+
+        Returns
+        -------
+        log_prob : ndarray
+            Log likelihood.
+
+        """
         values = list()
         for i in range(len(x)):
             values.append(self.like(x_obs, x[i], y[i]))
         return np.array(values)
 
     def log_prob(self, x, y):
+        """
+        Calculate log probability under surrogate posterior.
+
+        Parameters
+        ----------
+        x : ndarray
+            Observations.
+        y : ndarray
+            Pparameters.
+
+        Returns
+        -------
+        log_prob : ndarray
+            Log probability under surrogate posterior
+
+        """
         if self.round == 0:
             return self.log_prior(y)
 
@@ -809,6 +1367,36 @@ class NBI:
         truth_color="r",
         n=5000,
     ):
+        """
+        Wrapper function to make corner plot.
+
+        Parameters
+        ----------
+        x : ndarray
+            Input data for inference.
+        y : ndarray, optional
+            Parameters to plot. If None, parameters are drawn from the surrogate posterior.
+        weights : ndarray, optional
+            Importance weights for reweighting.
+        color : str, optional
+            Color of the corner plot
+        y_true : ndarray, optional
+            True parameters for crosshairs
+        plot_datapoints : bool, optional
+            If True, plot data points as scatter.
+        plot_density : bool, optional
+            If True, plot 2D densities.
+        range_ : list, optional
+            Percentile of data to plot in corner plot.
+        truth_color : str, optional
+            Color of crosshairs.
+        n : int, optional
+            Number of samples to draw from the surrogate posterior, if y is not specified.
+
+        Returns
+        -------
+
+        """
         if y is None:
             y = self.sample(x, n=n)
         corner.corner(
@@ -820,6 +1408,6 @@ class NBI:
             plot_density=plot_density,
             truth_color=truth_color,
             weights=weights,
-            **corner_kwargs,
+            **self.corner_kwargs,
         )
         plt.show()

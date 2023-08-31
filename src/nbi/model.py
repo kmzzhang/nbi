@@ -64,7 +64,7 @@ def get_featurizer(network_type, config):
             hidden_conv=config.pop("dim_conv_min", 32),
             max_hidden=config.pop("dim_conv_max", 256),
             norm=config.pop("norm", 'weight_norm'),
-            rnn_layer=2
+            rnn_layer=config.pop("n_rnn", 2)
         )
     elif network_type == "resnet":
         return ResNet(
