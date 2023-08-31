@@ -1,4 +1,6 @@
 [![License](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause) ![PyPI](https://img.shields.io/pypi/v/nbi)
+[![Tests](https://github.com/kmzzhang/nbi/actions/workflows/tests.yml/badge.svg)](https://github.com/kmzzhang/nbi/actions/workflows/tests.yml)
+
 
 ## nbi: neural bayesian inference
 
