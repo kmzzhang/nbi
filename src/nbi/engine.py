@@ -1,4 +1,5 @@
 import os
+
 os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 
 import copy
@@ -22,6 +23,7 @@ from torch.optim.lr_scheduler import (
 
 # this seems to be required for some environments
 from torch.utils.data import dataloader
+
 dataloader.multiprocessing = mp
 
 from .model import get_flow, DataParallelFlow, get_featurizer
@@ -30,6 +32,80 @@ from .utils import parallel_simulate, iid_gaussian, log_like_iidg
 
 
 class NBI:
+    """Neural Bayesian Inference Engine.
+
+    NBI is an open-source software introduced to support both amortized and sequential Neural Posterior Estimation
+    (NPE) methods, particularly tailored for astronomical inference problems, such as those involving
+    light curves and spectra.
+
+    The design of NBI addresses critical issues in the adaptation of NPE methods in astronomy. It provides built-in
+    "featurizer" networks with demonstrated efficacy on sequential data, removing the need for custom featurizer
+    networks by users. It also employs a modified algorithm, SNPE-IS, which enables asymptotically exact inference
+    by using the surrogate posterior under NPE as a proposal distribution for importance sampling.
+
+
+    Parameters
+    ----------
+    flow : dict or nn.Module
+        Dictionary containing hyperparameters for the Masked Autoregressive Flow.
+        If dictionary, the keys include:
+
+        - 'n_dims', dimension of model parameter space.
+        - 'num_blocks', number of Masked Autoregressive Flow (MAF) blocks.
+        - 'flow_hidden', hidden dimension for each MAF block
+        - 'perm_seed', random seed for dimension permutation of each MAF block
+        - 'n_mog', number of mixture of Gaussians as the base density. Recommended > 1 for multi-modal
+          and/or non-Gaussian posterior distributions. Rule of thumb: twice the maximum number of posterior modes.
+
+        Only 'n_dims' required. See class attribute default_flow_config for default values.
+
+        If nn.Module, it's a custom normalizing flow.
+
+    featurizer : dict or nn.Module
+        Dictionary of hyperparameters for the pre-built neural network for dimensionality reduction
+        or a custom PyTorch network module.
+
+        If dictionary, the keys include:
+            - 'type': Name of pre-built network architecture. Default: 'resnet-gru'.
+            - 'norm': Either 'weight_norm' or 'batch_norm'.
+            - 'dim_in': Number of input data channels.
+            - 'dim_out': Dimension of output feature vector.
+            - 'dim_conv_max': Maximum hidden dimensions of ResNet layers.
+            - 'depth': ResNet network depth.
+            - 'n_rnn': Number of GRU layers.
+
+        If nn.Module, it's a custom featurizer network that maps input sequence of shape [Batch, Channel, Length] to
+        output feature vector of shape [Batch, Dimension].
+
+    simulator : function, optional
+        Simulator function to generate data. Requires input of model parameters and returns simulated data.
+
+    priors : list of scipy.stats objects, optional
+        Prior distribution for Bayesian inference. If not provided, uniform prior is assumed.
+
+    device : {'cpu', 'cuda', 'mps'} str, optional
+        Device for neural network, default is 'cpu'.
+
+    path : str, optional
+        Path to save training set and model checkpoints.
+
+    n_jobs : int, optional
+        Number of parallel jobs for computation.
+
+    labels : list of str, optional
+        Names of parameters for inference. Must be in the same order as priors.
+
+    tqdm_notebook : bool, optional
+        If True, uses notebook version of tqdm for progress bars.
+
+    network_reinit : bool, optional
+        If True, re-initializes the network weights every round. Default is False, which often yield better results
+        than True.
+
+    scale_reinit : bool, optional
+        If True, re-initializes data pre-processing scales every round. Default is True.
+
+    """
 
     corner_kwargs = {
         "quantiles": [0.16, 0.5, 0.84],
@@ -52,7 +128,7 @@ class NBI:
         featurizer,
         simulator=None,
         priors=None,
-        device='cpu',
+        device="cpu",
         path="test",
         n_jobs=1,
         labels=None,
@@ -60,80 +136,6 @@ class NBI:
         network_reinit=False,
         scale_reinit=True,
     ):
-        """Initializes the Neural Bayesian Inference Engine.
-
-        NBI is an open-source software introduced to support both amortized and sequential Neural Posterior Estimation
-        (NPE) methods, particularly tailored for astronomical inference problems, such as those involving
-         light curves and spectra.
-
-        The design of NBIE addresses critical issues in the adaptation of NPE methods in astronomy. It provides built-in
-        "featurizer" networks with demonstrated efficacy on sequential data, removing the need for custom featurizer
-        networks by users. It also employs a modified algorithm, SNPE-IS, which enables asymptotically exact inference
-        by using the surrogate posterior under NPE as a proposal distribution for importance sampling.
-
-
-        Parameters
-        ----------
-        flow : dict or nn.Module
-            Dictionary containing hyperparameters for the Masked Autoregressive Flow.
-            If dictionary, the keys include:
-                - 'n_dims', dimension of model parameter space.
-                - 'num_blocks', number of Masked Autoregressive Flow (MAF) blocks.
-                - 'flow_hidden', hidden dimension for each MAF block
-                - 'perm_seed', random seed for dimension permutation of each MAF block
-                - 'n_mog', number of mixture of Gaussians as the base density. Recommended > 1 for multi-model and/or
-                non-Gaussian posterior distributions. Rule of thumb: twice the maximum number of posterior modes.
-
-            Only 'n_dims' required. See class attribute default_flow_config for default values.
-
-            If nn.Module, it's a custom normalizing flow.
-
-        featurizer : dict or nn.Module
-            Dictionary of hyperparameters for the pre-built neural network for dimensionality reduction
-            or a custom PyTorch network module.
-
-            If dictionary, the keys include:
-                - 'type': Name of pre-built network architecture. Default: 'resnet-gru'.
-                - 'norm': Either 'weight_norm' or 'batch_norm'.
-                - 'dim_in': Number of input data channels.
-                - 'dim_out': Dimension of output feature vector.
-                - 'dim_conv_max': Maximum hidden dimensions of ResNet layers.
-                - 'depth': ResNet network depth.
-                - 'n_rnn': Number of GRU layers.
-
-            If nn.Module, it's a custom featurizer network that maps input sequence of shape [Batch, Channel, Length] to
-            output feature vector of shape [Batch, Dimension].
-
-        simulator : function, optional
-        Simulator function to generate data. Requires input of model parameters and returns simulated data.
-
-        priors : list of scipy.stats objects, optional
-        Prior distribution for Bayesian inference. If not provided, uniform prior is assumed.
-
-        device : {'cpu', 'cuda', 'mps'} str, optional
-            Device for neural network, default is 'cpu'.
-
-        path : str, optional
-            Path to save training set and model checkpoints.
-
-        n_jobs : int, optional
-            Number of parallel jobs for computation.
-
-        labels : list of str, optional
-            Names of parameters for inference. Must be in the same order as priors.
-
-        tqdm_notebook : bool, optional
-            If True, uses notebook version of tqdm for progress bars.
-
-        network_reinit : bool, optional
-            If True, re-initializes the network weights every round. Default is False, which often yield better results
-            than True.
-
-        scale_reinit : bool, optional
-            If True, re-initializes data pre-processing scales every round. Default is True.
-
-        """
-
         self.device = device
         self.init_env()
         flow_config_all = copy.copy(self.default_flow_config)
@@ -149,7 +151,9 @@ class NBI:
             flow_config_all["num_cond_inputs"] = featurizer.num_outputs
 
         self.network = get_flow(featurizer, **flow_config_all)
-        self.network = DataParallelFlow(self.network).to(self.device, dtype=torch.float32)
+        self.network = DataParallelFlow(self.network).to(
+            self.device, dtype=torch.float32
+        )
 
         self.epoch = 0
         self.prev_clip = 1e8
@@ -337,7 +341,7 @@ class NBI:
 
         if min_lr is None:
             min_lr = min(lr, lr / (n_sims / batch_size * n_epochs) * 10)
-            print('Auto learning rate to min_lr =', min_lr)
+            print("Auto learning rate to min_lr =", min_lr)
 
         # for restarting training
         if len(self.x_all) == self.round:
@@ -435,6 +439,7 @@ class NBI:
     def load_prev_state(self, round):
         """
         Load state of the engine from a previous round.
+
         Parameters
         ----------
         round : int
@@ -466,6 +471,7 @@ class NBI:
     def prepare_data(self, x_obs, n_sims):
         """
         Generate training data for the current round.
+
         Parameters
         ----------
         x_obs : ndarray
@@ -504,6 +510,7 @@ class NBI:
     def weighted_corner(self, x_obs, y_true):
         """
         SNPE: Reweighted corner plot for the current round.
+
         Parameters
         ----------
         x_obs : ndarray
@@ -524,6 +531,7 @@ class NBI:
     def stop_training(self, patience=1):
         """
         Early stopping criteria based on validation loss.
+
         Parameters
         ----------
         patience : int
@@ -564,6 +572,7 @@ class NBI:
     def get_round_data(self, n_reuse):
         """
         Returns training data for the current round.
+
         Parameters
         ----------
         n_reuse : int
@@ -591,6 +600,7 @@ class NBI:
     def importance_reweight(self, x_obs, x, y):
         """
         SNPE: Calculate importance reweights for the current round.
+
         Parameters
         ----------
         x_obs : ndarray
@@ -627,6 +637,7 @@ class NBI:
     def importance_reweight_like_only(self, x_obs, x, y):
         """
         SNPE: Calculate importance reweights for the current round, using only the likelihood.
+
         Parameters
         ----------
         x_obs : ndarray
@@ -664,15 +675,19 @@ class NBI:
         """
         torch.manual_seed(0)
         np.random.seed(0)
-        if self.device == 'mps':
+        if self.device == "mps":
             try:
                 torch.mps.manual_seed(0)
             except:
-                print('MPS not supported by current PyTorch installation. Reverting to CPU')
-                self.device = 'cpu'
-        elif 'cuda' in self.device:
+                print(
+                    "MPS not supported by current PyTorch installation. Reverting to CPU"
+                )
+                self.device = "cpu"
+        elif "cuda" in self.device:
             if not torch.cuda.is_available():
-                print('CUDA not supported by current PyTorch installation. Reverting to CPU')
+                print(
+                    "CUDA not supported by current PyTorch installation. Reverting to CPU"
+                )
             else:
                 torch.cuda.manual_seed(0)
 
@@ -716,9 +731,7 @@ class NBI:
         """
         path_round = os.path.join(self.directory, str(self.round))
         path = os.path.join(path_round, str(epoch) + ".pth")
-        self.get_network().load_state_dict(
-            torch.load(path, map_location=self.device)
-        )
+        self.get_network().load_state_dict(torch.load(path, map_location=self.device))
 
     def set_params(self, network, x_scale, y_scale):
         """
@@ -792,6 +805,7 @@ class NBI:
     def scale_x(self, x, back=False):
         """
         Scale data to zero mean and unit variance, and vice versa.
+
         Parameters
         ----------
         x : ndarray
@@ -1202,7 +1216,7 @@ class NBI:
             "num_workers": workers,
             "pin_memory": False,
             "drop_last": True,
-            'persistent_workers': True,
+            "persistent_workers": True,
         }
 
         self.train_loader = DataLoader(
@@ -1386,7 +1400,7 @@ class NBI:
             If True, plot data points as scatter.
         plot_density : bool, optional
             If True, plot 2D densities.
-        range_ : list, optional
+        `range_` : list, optional
             Percentile of data to plot in corner plot.
         truth_color : str, optional
             Color of crosshairs.
