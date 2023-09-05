@@ -14,9 +14,6 @@
    :alt: Tests
 
 
-nbi: neural bayesian inference
-------------------------------
-
 Do you have challanging inference problems that are difficult to solve with standard optimization and/or MCMC methods?
 Are you looking to fit the same forward model to thousands or millions of observed targets?
 ``nbi`` may be your solution. 

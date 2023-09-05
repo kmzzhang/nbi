@@ -1,8 +1,11 @@
 [![License](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause) ![PyPI](https://img.shields.io/pypi/v/nbi)
 [![Tests](https://github.com/kmzzhang/nbi/actions/workflows/tests.yml/badge.svg)](https://github.com/kmzzhang/nbi/actions/workflows/tests.yml)
+[![Documentation Status](https://readthedocs.org/projects/nbi/badge/?version=latest)](https://nbi.readthedocs.io/en/latest/?badge=latest)
 
 
 ## nbi: neural bayesian inference
+
+[Documentation](https://nbi.readthedocs.io/en/latest/)
 
 Do you have challanging inference problems that are difficult to solve with standard optimization and/or MCMC methods?
 Are you looking to fit the same forward model to thousands or millions of observed targets?
