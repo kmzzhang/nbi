@@ -55,8 +55,7 @@ def test():
         simulator=sine,
         priors=priors,
         labels=labels,
-        device='cpu',
-        n_jobs=10
+        device='cpu'
     )
 
     engine.fit(

@@ -43,7 +43,6 @@ class NBI:
     networks by users. It also employs a modified algorithm, SNPE-IS, which enables asymptotically exact inference
     by using the surrogate posterior under NPE as a proposal distribution for importance sampling.
 
-
     Parameters
     ----------
     flow : dict or nn.Module
@@ -86,28 +85,20 @@ class NBI:
     device : {'cpu', 'cuda', 'mps'} str, optional
         Device for neural network, default is 'cpu'.
 
-    path : str, optional
-        Path to save training set and model checkpoints.
-
     n_jobs : int, optional
-        Number of parallel jobs for computation.
+        Number of parallel jobs for generating simulations.
 
     labels : list of str, optional
         Names of parameters for inference. Must be in the same order as priors.
 
-    tqdm_notebook : bool, optional
-        If True, uses notebook version of tqdm for progress bars.
-
-    network_reinit : bool, optional
-        If True, re-initializes the network weights every round. Default is False, which often yield better results
-        than True.
-
-    scale_reinit : bool, optional
-        If True, re-initializes data pre-processing scales every round. Default is True.
+    notebook : bool, optional
+        If True, enable the following settings:
+            - use notebook version of tqdm for progress bars.
+            - show corner plots inline.
 
     """
 
-    corner_kwargs = {
+    corner_config = {
         "quantiles": [0.16, 0.5, 0.84],
         "show_titles": True,
         "title_kwargs": {"fontsize": 16},
@@ -115,7 +106,7 @@ class NBI:
         "levels": 1.0 - np.exp(-0.5 * np.arange(0.5, 2.6, 0.5) ** 2),
     }
 
-    default_flow_config = {
+    flow_config = {
         "flow_hidden": 64,
         "num_blocks": 5,
         "perm_seed": 3,
@@ -128,48 +119,44 @@ class NBI:
         featurizer,
         simulator=None,
         priors=None,
-        device="cpu",
-        path="test",
-        n_jobs=1,
         labels=None,
-        tqdm_notebook=False,
-        network_reinit=False,
-        scale_reinit=True,
+        device="cpu",
+        n_jobs=1,
+        notebook=False,
     ):
         self.device = device
-        self.init_env()
-        flow_config_all = copy.copy(self.default_flow_config)
-        flow_config_all.update(flow)
-        self.corner_kwargs.update({"labels": labels})
-        self.network_reinit = network_reinit
-        self.scale_reinit = scale_reinit
+        self._init_env()
+        self.flow_config.update(flow)
+        self.corner_config.update({"labels": labels})
 
-        # if featurizer is not user provided pytorch module
-        # generate featurizer network based on user specified type and hyperparameters
+        # These often produces the best training results. Alter at your own risk. Will be studied in the future.
+        self.network_reinit = False
+        self.scale_reinit = True
+
+        # If featurizer is provided as a dictionary of hyperparameters
         if type(featurizer) == dict:
             featurizer = get_featurizer(featurizer.pop("type"), featurizer)
-            flow_config_all["num_cond_inputs"] = featurizer.num_outputs
 
-        self.network = get_flow(featurizer, **flow_config_all)
+            # Since the output of the featurizer network will serve as the input to the normalizing flow
+            # We will set the dimension of the normalizing flow to be the same as the output dimension of the featurizer
+            # All pre-built featurizer networks are required to have a num_outputs attribute
+            self.flow_config["num_cond_inputs"] = featurizer.num_outputs
+
+        self.network = get_flow(featurizer, **self.flow_config)
+
+        # For consistancy, the network is always wrapped in a DataParallelFlow
         self.network = DataParallelFlow(self.network).to(
             self.device, dtype=torch.float32
         )
-
-        self.epoch = 0
-        self.prev_clip = 1e8
-        self.tloss = list()
-        self.vloss = list()
 
         self.x_mean = None
         self.x_std = None
         self.y_mean = None
         self.y_std = None
-        self.norm = list()
 
         self.prior = priors
         self.param_names = labels
         self.simulator = simulator
-        self.directory = path
         self.n_jobs = n_jobs
         self.x_obs = None
         self.y_true = None
@@ -199,7 +186,7 @@ class NBI:
         except:
             pass
 
-        if tqdm_notebook:
+        if notebook:
             self.tqdm = tqdmn
         else:
             self.tqdm = tqdm
@@ -217,8 +204,6 @@ class NBI:
         y_true=None,
         n_reuse=0,
         batch_size=64,
-        project="test",
-        wandb_enabled=False,
         neff_stop=-1,
         early_stop_train=False,
         early_stop_patience=-1,
@@ -229,6 +214,9 @@ class NBI:
         plot=True,
         f_accept_min=-1,
         workers=8,
+        wandb_enabled=False,
+        project="test",
+        directory="test"
     ):
         """
         Fit the Neural Bayesian Inference Engine.
@@ -268,7 +256,7 @@ class NBI:
         x_obs : ndarray, optional
             Observed data.
 
-        y_true : ndarray, optional
+        y_true : ndarray or list, optional
             True target values.
 
         n_reuse : int, optional
@@ -315,10 +303,21 @@ class NBI:
         workers : int, optional
             Number of workers for data loading.
 
+        directory : str, optional
+            Path to save training set and model checkpoints.
+
+
         Returns
         -------
 
         """
+
+        self.epoch = 0
+        self.prev_clip = 1e8
+        self.tloss = list()
+        self.vloss = list()
+        self.grad_norm = list()
+
         assert n_sims > 0 or y is not None
 
         if type(noise) == np.ndarray:
@@ -337,6 +336,8 @@ class NBI:
         self.x = x
         self.y = y
 
+        self.directory = directory
+
         self._init_wandb(project, wandb_enabled)
 
         if min_lr is None:
@@ -347,7 +348,7 @@ class NBI:
         if len(self.x_all) == self.round:
             # this is not a restart because
             # data for this round has not been generated
-            self.prepare_data(x_obs, n_sims)
+            self._prepare_data(x_obs, n_sims)
 
         for i in range(n_rounds):
             print(
@@ -358,7 +359,7 @@ class NBI:
 
             self._init_train(lr)
             self._init_scheduler(min_lr, decay_type=decay_type)
-            x_round, y_round = self.get_round_data(n_reuse)
+            x_round, y_round = self._get_round_data(n_reuse)
             data_container = BaseContainer(
                 x_round, y_round, f_test=0, f_val=f_val, process=self.process
             )
@@ -379,7 +380,7 @@ class NBI:
 
                 self.save_state_dict()
 
-                if self.stop_training(early_stop_patience):
+                if self._stop_training(early_stop_patience):
                     print(
                         "early stopping, loading state dict from epoch",
                         self.epoch - early_stop_patience - 2,
@@ -387,13 +388,13 @@ class NBI:
                     self.load_state_dict(self.epoch - early_stop_patience - 2)
                     break
 
-            self.save_current_state()
+            self._save_current_state()
             self.round += 1
 
             if n_rounds == 1:
                 return
 
-            self.prepare_data(x_obs, n_sims)
+            self._prepare_data(x_obs, n_sims)
 
             if self.round > 0 and plot:
                 self.weighted_corner(x_obs, y_true)
@@ -415,13 +416,13 @@ class NBI:
                     print(
                         "Early stop: Surrogate posterior did not improve for this round"
                     )
-                    self.load_prev_state(self.round - 2)
+                    self._load_prev_state(self.round - 2)
                     return
 
         if x_obs is not None:
             self._corner_all()
 
-    def save_current_state(self):
+    def _save_current_state(self):
         """
         Saves the network state from current round.
 
@@ -436,7 +437,7 @@ class NBI:
         self.prev_y_mean.append(self.y_mean)
         self.prev_y_std.append(self.y_std)
 
-    def load_prev_state(self, round):
+    def _load_prev_state(self, round):
         """
         Load state of the engine from a previous round.
 
@@ -468,7 +469,7 @@ class NBI:
         all_thetas, all_weights = self.result()
         self.corner(self.x_obs, all_thetas, y_true=self.y_true, weights=all_weights)
 
-    def prepare_data(self, x_obs, n_sims):
+    def _prepare_data(self, x_obs, n_sims):
         """
         Generate training data for the current round.
 
@@ -495,7 +496,7 @@ class NBI:
         self.x_all.append(np.array(x_path)[good])
         self.y_all.append(np.array(ys)[good])
 
-        weights = self.importance_reweight(x_obs, self.x_all[-1], self.y_all[-1])
+        weights = self._importance_reweight(x_obs, self.x_all[-1], self.y_all[-1])
         self.weights.append(weights)
         np.save(os.path.join(self.directory, str(self.round)) + "_w.npy", weights)
 
@@ -528,7 +529,7 @@ class NBI:
         except:
             print("corner plot failed")
 
-    def stop_training(self, patience=1):
+    def _stop_training(self, patience=1):
         """
         Early stopping criteria based on validation loss.
 
@@ -569,7 +570,7 @@ class NBI:
 
         return all_thetas, all_weights
 
-    def get_round_data(self, n_reuse):
+    def _get_round_data(self, n_reuse):
         """
         Returns training data for the current round.
 
@@ -597,7 +598,7 @@ class NBI:
 
             return x_round, y_round
 
-    def importance_reweight(self, x_obs, x, y):
+    def _importance_reweight(self, x_obs, x, y):
         """
         SNPE: Calculate importance reweights for the current round.
 
@@ -634,7 +635,7 @@ class NBI:
 
         return weights
 
-    def importance_reweight_like_only(self, x_obs, x, y):
+    def _importance_reweight_like_only(self, x_obs, x, y):
         """
         SNPE: Calculate importance reweights for the current round, using only the likelihood.
 
@@ -665,7 +666,7 @@ class NBI:
 
         return weights
 
-    def init_env(self):
+    def _init_env(self):
         """
         Initialize environment for training.
 
@@ -847,7 +848,7 @@ class NBI:
             Input data for inference
         x_err : ndarray, optional
             Measurement error for input data. Required for importance sampling. If not specified, use log_like instead.
-        y_true : ndarray, optional
+        y_true : ndarray or list, optional
             True parameters, if known.
         log_like : function, optional
             Log-likelihood function that takes in (x, x_path, y) and returns the log likelihood. Required for importance
@@ -888,7 +889,7 @@ class NBI:
         x_path, good = self.simulate(ys)
         x_path = x_path[good]
         ys = ys[good]
-        weights = self.importance_reweight(x, x_path, ys)
+        weights = self._importance_reweight(x, x_path, ys)
 
         neff = 1 / (weights**2).sum() - 1
 
@@ -905,7 +906,7 @@ class NBI:
             x_path, good = self.simulate(ys_extra)
             x_path = x_path[good]
             ys_extra = ys_extra[good]
-            weights_extra = self.importance_reweight(x, x_path, ys_extra)
+            weights_extra = self._importance_reweight(x, x_path, ys_extra)
 
             neff_extra = 1 / (weights_extra**2).sum() - 1
             print("Total effective sample size N =", "%.1f" % (neff + neff_extra))
@@ -1034,7 +1035,7 @@ class NBI:
                 train_loss.append(loss.item())
                 loss.backward()
                 if self.clip > 0:
-                    self.norm.append(
+                    self.grad_norm.append(
                         torch.nn.utils.clip_grad_norm_(
                             self.network.parameters(), self.prev_clip
                         ).cpu()
@@ -1049,7 +1050,7 @@ class NBI:
                 )
 
         if self.clip > 0:
-            self.prev_clip = np.percentile(np.array(self.norm), self.clip)
+            self.prev_clip = np.percentile(np.array(self.grad_norm), self.clip)
         train_loss = np.array(train_loss).mean()
         self.tloss.append(train_loss)
 
@@ -1422,6 +1423,6 @@ class NBI:
             plot_density=plot_density,
             truth_color=truth_color,
             weights=weights,
-            **self.corner_kwargs,
+            **self.corner_config,
         )
         plt.show()
