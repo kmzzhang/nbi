@@ -2,3 +2,12 @@ nbsphinx
 myst-parser
 sphinx_rtd_theme
 pandoc
+torch
+numpy
+scipy
+matplotlib
+corner
+joblib
+pytest
+tqdm
+multiprocess
