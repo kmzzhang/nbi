@@ -25,6 +25,7 @@ from .utils import parallel_simulate, iid_gaussian, log_like_iidg
 
 # this seems to be required for some environments
 from torch.utils.data import dataloader
+
 dataloader.multiprocessing = mp
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "True"

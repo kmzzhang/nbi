@@ -25,7 +25,9 @@ dependencies = [
     "joblib",
     "pytest",
     "tqdm",
-    "multiprocess"
+    "multiprocess",
+    "wandb",
+    "black",
 ]
 
 [project.urls]
