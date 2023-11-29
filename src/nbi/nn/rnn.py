@@ -49,7 +49,9 @@ class RNN(nn.Module):
         # N, C, L --> L, N, H0
         x = x.permute(2, 0, 1)
         code = self.encoder(x)[1]
-        feature = torch.cat((code[-1], code[-2]), dim=1) if self.bidirectional else code[-1]
+        feature = (
+            torch.cat((code[-1], code[-2]), dim=1) if self.bidirectional else code[-1]
+        )
 
         if self.aux > 0:
             feature = torch.cat((feature, aux), dim=1)
