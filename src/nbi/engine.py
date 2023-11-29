@@ -1,13 +1,10 @@
 import os
-
-os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
-
 import copy
-from tqdm import tqdm
-from tqdm.notebook import tqdm as tqdmn
 import multiprocess as mp
 from multiprocess import Pool
 
+from tqdm import tqdm
+from tqdm.notebook import tqdm as tqdmn
 import corner
 import numpy as np
 import matplotlib.pyplot as plt
@@ -20,15 +17,17 @@ from torch.optim.lr_scheduler import (
     MultiStepLR,
     CosineAnnealingWarmRestarts,
 )
-
-# this seems to be required for some environments
-from torch.utils.data import dataloader
-
-dataloader.multiprocessing = mp
+import wandb
 
 from .model import get_flow, DataParallelFlow, get_featurizer
 from .data import BaseContainer
 from .utils import parallel_simulate, iid_gaussian, log_like_iidg
+
+# this seems to be required for some environments
+from torch.utils.data import dataloader
+dataloader.multiprocessing = mp
+
+os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 
 
 class NBI:
@@ -524,7 +523,6 @@ class NBI:
         """
         try:
             self.corner(x_obs, self.y_all[-1], y_true=y_true, weights=self.weights[-1])
-
         except:
             print("corner plot failed")
 
