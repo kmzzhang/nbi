@@ -2,6 +2,7 @@ import numpy as np
 from tqdm import tqdm
 from functools import partial
 
+
 def parallel_simulate(args):
     """
     thetas, paths, simulator are packaged into args because this function will be called using multiprocessing
@@ -44,7 +45,7 @@ def log_like(x_err, x, x_path, y):
     # x is observed data, x_path is path to saved model prediction
     model = np.load(x_path)
     chi2 = (((x - model) / x_err) ** 2).sum()
-    return - chi2 / 2
+    return -chi2 / 2
 
 
 def log_like_iidg(x_err):

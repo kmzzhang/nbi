@@ -63,8 +63,8 @@ def get_featurizer(network_type, config):
             kernel_size=config.pop("kernel", 3),
             hidden_conv=config.pop("dim_conv_min", 32),
             max_hidden=config.pop("dim_conv_max", 256),
-            norm=config.pop("norm", 'weight_norm'),
-            rnn_layer=config.pop("n_rnn", 2)
+            norm=config.pop("norm", "weight_norm"),
+            rnn_layer=config.pop("n_rnn", 2),
         )
     elif network_type == "resnet":
         return ResNet(
@@ -74,8 +74,8 @@ def get_featurizer(network_type, config):
             kernel_size=config.pop("kernel", 3),
             hidden_conv=config.pop("dim_conv_min", 32),
             max_hidden=config.pop("dim_conv_max", 256),
-            norm=config.pop("norm", 'weight_norm'),
-            rnn_layer=0
+            norm=config.pop("norm", "weight_norm"),
+            rnn_layer=0,
         )
     elif network_type == "gru":
         return RNN(
@@ -86,8 +86,9 @@ def get_featurizer(network_type, config):
             hidden=config["dim_out"],
             dropout_rnn=0.15,
             bidirectional=False,
-            rnn="GRU"
+            rnn="GRU",
         )
+
 
 def get_flow(
     featurizer,
