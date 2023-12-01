@@ -22,7 +22,7 @@ This will only need to be done once. After that, all your commits will be checke
 Make a local branch like:
 
 ```bash
-git checkout -b your_local_branch_with_changes_name
+git switch -c your_local_branch_with_changes_name
 ```
 
 Then commit to this branch as normal. When you are ready to submit a PR push to your fork:
