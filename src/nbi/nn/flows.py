@@ -4,9 +4,9 @@ import math
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.distributions as D
 import torch.nn.functional as F
+from torch import nn
 
 
 def get_mask(in_features, out_features, in_flow_features, mask_type=None):
@@ -33,7 +33,7 @@ class MaskedLinear(nn.Module):
     def __init__(
         self, in_features, out_features, mask, cond_in_features=None, bias=True
     ):
-        super(MaskedLinear, self).__init__()
+        super().__init__()
         self.linear = nn.Linear(in_features, out_features)
         if cond_in_features is not None:
             self.cond_linear = nn.Linear(cond_in_features, out_features, bias=False)
@@ -245,7 +245,7 @@ class MADE(nn.Module):
         clamp_0=-2,
         clamp_1=3,
     ):
-        super(MADE, self).__init__()
+        super().__init__()
 
         self.linear_scale = linear_scale
         activations = {"relu": nn.ReLU, "sigmoid": nn.Sigmoid, "tanh": nn.Tanh}
@@ -340,7 +340,7 @@ class MADE2(nn.Module):
         clamp_0=-2,
         clamp_1=3,
     ):
-        super(MADE2, self).__init__()
+        super().__init__()
 
         self.linear_scale = linear_scale
         activations = {"relu": nn.ReLU, "sigmoid": nn.Sigmoid, "tanh": nn.Tanh}
@@ -405,7 +405,7 @@ class MADE2(nn.Module):
 
 class Sigmoid(nn.Module):
     def __init__(self):
-        super(Sigmoid, self).__init__()
+        super().__init__()
 
     def forward(self, inputs, cond_inputs=None, mode="direct"):
         if mode == "direct":
@@ -421,18 +421,18 @@ class Sigmoid(nn.Module):
 
 class Logit(Sigmoid):
     def __init__(self):
-        super(Logit, self).__init__()
+        super().__init__()
 
     def forward(self, inputs, cond_inputs=None, mode="direct"):
         if mode == "direct":
-            return super(Logit, self).forward(inputs, "inverse")
+            return super().forward(inputs, "inverse")
         else:
-            return super(Logit, self).forward(inputs, "direct")
+            return super().forward(inputs, "direct")
 
 
 class BatchNormFlow(nn.Module):
     def __init__(self, num_inputs, momentum=0.0, eps=1e-5):
-        super(BatchNormFlow, self).__init__()
+        super().__init__()
 
         self.log_gamma = nn.Parameter(torch.zeros(num_inputs))
         self.beta = nn.Parameter(torch.zeros(num_inputs))
@@ -479,7 +479,7 @@ class BatchNormFlow(nn.Module):
 
 class AffineShift(nn.Module):
     def __init__(self, num_inputs, dim_cond, dim_hidden):
-        super(AffineShift, self).__init__()
+        super().__init__()
         self.net = nn.Sequential(
             nn.Linear(dim_cond, dim_hidden),
             nn.ReLU(),
@@ -509,7 +509,7 @@ class Reverse(nn.Module):
     """
 
     def __init__(self, num_inputs):
-        super(Reverse, self).__init__()
+        super().__init__()
         self.perm = np.array(np.arange(0, num_inputs)[::-1])
         self.inv_perm = np.argsort(self.perm)
 
@@ -526,7 +526,7 @@ class Reverse(nn.Module):
 
 class Shuffle(nn.Module):
     def __init__(self, num_inputs, seed=0):
-        super(Shuffle, self).__init__()
+        super().__init__()
         np.random.seed(seed)
         self.perm = np.array(np.arange(0, num_inputs))
         np.random.shuffle(self.perm)
@@ -545,7 +545,7 @@ class Shuffle(nn.Module):
 
 class ShuffleMOG(nn.Module):
     def __init__(self, num_inputs, seed=0):
-        super(ShuffleMOG, self).__init__()
+        super().__init__()
         np.random.seed(seed)
         self.perm = np.array(np.arange(0, num_inputs))
         np.random.shuffle(self.perm)
@@ -576,7 +576,7 @@ class CouplingLayer(nn.Module):
         s_act="tanh",
         t_act="relu",
     ):
-        super(CouplingLayer, self).__init__()
+        super().__init__()
 
         self.num_inputs = num_inputs
         self.mask = mask

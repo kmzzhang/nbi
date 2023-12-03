@@ -1,6 +1,8 @@
+from functools import partial
+
 import numpy as np
 from tqdm import tqdm
-from functools import partial
+
 
 def parallel_simulate(args):
     """
@@ -15,7 +17,7 @@ def parallel_simulate(args):
 
     thetas, paths, simulator = args
     use_tqdm = "/0.npy" in paths[0]
-    mask = list()
+    mask = []
     if use_tqdm:
         print("Generating simulations")
     for i, params in tqdm(enumerate(thetas), disable=not use_tqdm):
@@ -44,7 +46,7 @@ def log_like(x_err, x, x_path, y):
     # x is observed data, x_path is path to saved model prediction
     model = np.load(x_path)
     chi2 = (((x - model) / x_err) ** 2).sum()
-    return - chi2 / 2
+    return -chi2 / 2
 
 
 def log_like_iidg(x_err):

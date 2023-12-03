@@ -3,32 +3,30 @@ import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 
 import copy
-from tqdm import tqdm
-from tqdm.notebook import tqdm as tqdmn
-import multiprocess as mp
-from multiprocess import Pool
 
 import corner
-import numpy as np
 import matplotlib.pyplot as plt
-
+import multiprocess as mp
+import numpy as np
 import torch
-import torch.optim as optim
-from torch.utils.data import DataLoader
+from multiprocess import Pool
+from torch import optim
 from torch.optim.lr_scheduler import (
-    ReduceLROnPlateau,
-    MultiStepLR,
     CosineAnnealingWarmRestarts,
+    MultiStepLR,
+    ReduceLROnPlateau,
 )
 
 # this seems to be required for some environments
-from torch.utils.data import dataloader
+from torch.utils.data import DataLoader, dataloader
+from tqdm import tqdm
+from tqdm.notebook import tqdm as tqdmn
 
 dataloader.multiprocessing = mp
 
-from .model import get_flow, DataParallelFlow, get_featurizer
 from .data import BaseContainer
-from .utils import parallel_simulate, iid_gaussian, log_like_iidg
+from .model import DataParallelFlow, get_featurizer, get_flow
+from .utils import iid_gaussian, log_like_iidg, parallel_simulate
 
 
 class NBI:
@@ -157,14 +155,14 @@ class NBI:
 
         self.epoch = 0
         self.prev_clip = 1e8
-        self.tloss = list()
-        self.vloss = list()
+        self.tloss = []
+        self.vloss = []
 
         self.x_mean = None
         self.x_std = None
         self.y_mean = None
         self.y_std = None
-        self.norm = list()
+        self.norm = []
 
         self.prior = priors
         self.param_names = labels
@@ -182,17 +180,17 @@ class NBI:
 
         self.round = 0
         self.early_stop_count = 0
-        self.x_all = list()
-        self.y_all = list()
-        self.weights = list()
-        self.neff = list()
+        self.x_all = []
+        self.y_all = []
+        self.weights = []
+        self.neff = []
         self.state_dict_0 = self.get_state_dict()
 
-        self.prev_state = list()
-        self.prev_x_mean = list()
-        self.prev_x_std = list()
-        self.prev_y_mean = list()
-        self.prev_y_std = list()
+        self.prev_state = []
+        self.prev_x_mean = []
+        self.prev_x_std = []
+        self.prev_y_mean = []
+        self.prev_y_std = []
 
         try:
             os.mkdir(self.directory)
@@ -351,9 +349,7 @@ class NBI:
 
         for i in range(n_rounds):
             print(
-                "\n---------------------- Round: {} ----------------------".format(
-                    self.round
-                )
+                f"\n---------------------- Round: {self.round} ----------------------"
             )
 
             self._init_train(lr)
@@ -406,7 +402,7 @@ class NBI:
 
             f_accept_round = self.neff[-1] / n_sims
             if self.neff[-1] / n_sims > f_accept_min > 0:
-                print("Success: Sampling efficiency is {:.1f}!".format(f_accept_round))
+                print(f"Success: Sampling efficiency is {f_accept_round:.1f}!")
                 self._corner_all()
                 return
 
@@ -504,7 +500,7 @@ class NBI:
             self.neff.append(neff)
             print(
                 "Effective sample size for current/all rounds",
-                "%.1f/%.1f" % (neff, np.sum(self.neff)),
+                f"{neff:.1f}/{np.sum(self.neff):.1f}",
             )
 
     def weighted_corner(self, x_obs, y_true):
@@ -893,8 +889,8 @@ class NBI:
         neff = 1 / (weights**2).sum() - 1
 
         f_accept = neff / n_samples
-        print("Effective Sample Size = {0:.1f}".format(neff))
-        print("Sampling efficiency = {0:.1f}%".format(f_accept * 100))
+        print(f"Effective Sample Size = {neff:.1f}")
+        print(f"Sampling efficiency = {f_accept * 100:.1f}%")
 
         if n_max > n_samples and neff > neff_min:
             n_required = int(n_samples * (1 / f_accept - 1))
@@ -945,7 +941,7 @@ class NBI:
         with torch.no_grad():
             # GPU memory control (make larger?)
             if n > 20000:
-                s = list()
+                s = []
                 for i in range(n // 100000 + 1):
                     s.append(self.get_network()(x, n=n, sample=True).cpu().numpy())
                 s = np.concatenate(s)[:n]
@@ -1017,7 +1013,7 @@ class NBI:
         """
         np.random.seed(self.epoch)
         self.network.train()
-        train_loss = list()
+        train_loss = []
         with self.tqdm(total=len(self.train_loader.dataset)) as pbar:
             for batch_idx, data in enumerate(self.train_loader):
                 if len(data) == 2:
@@ -1063,7 +1059,7 @@ class NBI:
         """
         np.random.seed(0)
         self.network.eval()
-        val_loss = list()
+        val_loss = []
         with self.tqdm(total=len(self.valid_loader.dataset)) as pbar:
             objs = 0
             for batch_idx, data in enumerate(self.valid_loader):
@@ -1077,13 +1073,11 @@ class NBI:
                     val_loss.append(loss.detach().cpu().numpy())
                 pbar.update(x.shape[0])
                 pbar.set_description(
-                    "- Val, Loglike in nats: {:.6f}".format(
-                        -np.sum(val_loss) / (batch_idx + 1)
-                    )
+                    f"- Val, Loglike in nats: {-np.sum(val_loss) / (batch_idx + 1):.6f}"
                 )
 
         val_loss = np.median(val_loss)
-        pbar.set_description("- Val, Loglike in nats: {:.6f}".format(-val_loss))
+        pbar.set_description(f"- Val, Loglike in nats: {-val_loss:.6f}")
         self.vloss.append(val_loss)
 
     def _init_wandb(self, project, enable):
@@ -1133,8 +1127,8 @@ class NBI:
         self.optimizer = optim.Adam(self.network.parameters(), lr=lr)
 
         torch.manual_seed(0)
-        self.training_losses = list()
-        self.validation_losses = list()
+        self.training_losses = []
+        self.validation_losses = []
 
     def _init_scheduler(
         self, min_lr, decay_type="SGDR", patience=5, decay_threshold=0.01
@@ -1247,7 +1241,7 @@ class NBI:
             if self.y is not None:
                 return self.y
             else:
-                params = list()
+                params = []
                 for prior in self.prior:
                     params.append(prior.rvs(n))
                 params = np.array(params).T
@@ -1269,8 +1263,8 @@ class NBI:
         -------
 
         """
-        x_list = list()
-        y_list = list()
+        x_list = []
+        y_list = []
         n = 0
         for batch_idx, data in enumerate(self.train_loader):
             if len(data) == 2:
@@ -1332,7 +1326,7 @@ class NBI:
             Log likelihood.
 
         """
-        values = list()
+        values = []
         for i in range(len(x)):
             values.append(self.like(x_obs, x[i], y[i]))
         return np.array(values)
