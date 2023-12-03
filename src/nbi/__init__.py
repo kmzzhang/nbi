@@ -1,6 +1,6 @@
 from .engine import *
-from .nn import *
 from .model import get_featurizer
+from .nn import *
 
 __author__ = "Keming Zhang"
 __email__ = "kemingz@berkeley.edu"
