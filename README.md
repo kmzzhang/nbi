@@ -2,14 +2,13 @@
 [![Tests](https://github.com/kmzzhang/nbi/actions/workflows/tests.yml/badge.svg)](https://github.com/kmzzhang/nbi/actions/workflows/tests.yml)
 [![Documentation Status](https://readthedocs.org/projects/nbi/badge/?version=latest)](https://nbi.readthedocs.io/en/latest/?badge=latest)
 
-
 ## nbi: neural bayesian inference
 
 [Documentation](https://nbi.readthedocs.io/en/latest/)
 
-Do you have challanging inference problems that are difficult to solve with standard optimization and/or MCMC methods?
+Do you have challenging inference problems that are difficult to solve with standard optimization and/or MCMC methods?
 Are you looking to fit the same forward model to thousands or millions of observed targets?
-`nbi` may be your solution. 
+`nbi` may be your solution.
 
 `nbi` is an engine for Neural Posterior Estimation (NPE) focused on out-of-the-box functionality for astronomical data,
 particularly light curves and spectra.
@@ -30,6 +29,7 @@ pip install .
 
 If you are using M1/M2 Mac **CPU**, you might want to install PyTorch from source and disable NNPACK, which is known to
 reduce performance (see [issue](https://github.com/pytorch/pytorch/issues/107534)).
+
 ```bash
 git clone --recursive https://github.com/pytorch/pytorch
 cd pytorch
@@ -43,9 +43,10 @@ example below illustrates the basic API, which follows the scikit-learn style. T
 sequential data is `resnet-gru`, which is a hybrid CNN-RNN architecture.
 
 Here are a rule of thumb for resnet-gru hyperparameters:
-* dim_in: this is your number of input data channels
-* depth: number of ResNet blocks. Start near log2(L)-5, where L is length of your sequential data.
-* max_hidden: Maximum hidden dimensions for ResNet. Hidden dimensions double (from hidden_conv=32 by default) every 
+
+- dim_in: this is your number of input data channels
+- depth: number of ResNet blocks. Start near log2(L)-5, where L is length of your sequential data.
+- max_hidden: Maximum hidden dimensions for ResNet. Hidden dimensions double (from hidden_conv=32 by default) every
   depth. At least a few times D^2, where D is the dimension of the physical parameter space.
 
 ```python
@@ -80,31 +81,30 @@ engine.fit(
 y_pred, weights = engine.predict(x_obs, x_err, n_samples=2000)
 ```
 
-Note that currently the `MPS` backend (M1/M2 GPU) does not support weight normalization, 
+Note that currently the `MPS` backend (M1/M2 GPU) does not support weight normalization,
 which is used by the ResNet-GRU network. You may specify 'norm': 'weight_norm' instead, although
 the performance has not been examined.
 
 ## References
 
-nbi: the Astronomer's Package for Neural Posterior Estimation 
-([Zhang et al. 2023](https://ml4astro.github.io/icml2023/assets/71.pdf)). 
-Accepted to the "Machine Learning for Astrophysics" workshop at the 2023 
+nbi: the Astronomer's Package for Neural Posterior Estimation
+([Zhang et al. 2023](https://ml4astro.github.io/icml2023/assets/71.pdf)).
+Accepted to the "Machine Learning for Astrophysics" workshop at the 2023
 International Conference for Machine Learning (ICML). Will be posted to arXiv soon.
 
 Masked Autoregressive Flow for Density Estimation (Papamakarios et al. 2017)\
 https://arxiv.org/abs/1705.07057
 
 Featurizers: ResNet (He et al. 2015; https://arxiv.org/abs/1512.03385), Gated Recurrent Units
-(GRU; Cho et al. 2014; https://arxiv.org/abs/1406.1078), 
+(GRU; Cho et al. 2014; https://arxiv.org/abs/1406.1078),
 ResNet-GRU (Zhang et al. 2021; https://iopscience.iop.org/article/10.3847/1538-3881/abf42e)
 
-
-
 ## Acknowledgments
-The `nbi` package is expanded from code originally written for *''Real-time Likelihood-free Inference of Roman Binary Microlensing Events
-with Amortized Neural Posterior Estimation'''* ([Zhang et al. 2021](https://iopscience.iop.org/article/10.3847/1538-3881/abf42e)).
+
+The `nbi` package is expanded from code originally written for _''Real-time Likelihood-free Inference of Roman Binary Microlensing Events
+with Amortized Neural Posterior Estimation'''_ ([Zhang et al. 2021](https://iopscience.iop.org/article/10.3847/1538-3881/abf42e)).
 The Masked Autoregressive Flow in this package is partly adapted from the implementation in
 https://github.com/kamenbliznashki/normalizing_flows.
 Work on this project was supported by the [National Science Foundation award #2206744](https://www.nsf.gov/awardsearch/showAward?AWD_ID=2206744&HistoricalAwards=false) ("CDS&E: Accelerating Astrophysical Insight at Scale with Likelihood-Free Inference").
 
-<center><img src="https://www.nsf.gov/policies/images/NSF_Official_logo.svg" width="10%"></center>
+<center><img src="https://new.nsf.gov/themes/custom/nsf_theme/components/images/logo/logo-desktop.svg" width="30%"></center>

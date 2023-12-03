@@ -25,7 +25,10 @@ dependencies = [
     "joblib",
     "pytest",
     "tqdm",
-    "multiprocess"
+    "multiprocess",
+    "wandb",
+    "black",
+    "flake8",
 ]
 
 [project.urls]
