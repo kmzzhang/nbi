@@ -1,4 +1,4 @@
-import torch.nn as nn
+from torch import nn
 from torch.nn.utils import weight_norm
 
 
@@ -14,7 +14,7 @@ class ResNet(nn.Module):
         max_hidden=256,
         maxpool_size=2,
         rnn_layer=0,
-        norm='weight_norm'
+        norm="weight_norm",
     ):
         super(type(self), self).__init__()
         h = min(max_hidden, hidden_conv * 2 ** (depth - 1))
@@ -30,7 +30,7 @@ class ResNet(nn.Module):
             hidden_conv,
             max_hidden,
             maxpool_size,
-            norm
+            norm,
         )
         if rnn_layer > 0:
             self.rnn = nn.GRU(input_size=h, hidden_size=h, num_layers=rnn_layer)
@@ -61,7 +61,7 @@ class ResNetBase(nn.Module):
         hidden_conv=32,
         max_hidden=256,
         maxpool_size=2,
-        norm='weight_norm'
+        norm="weight_norm",
     ):
         """
 
@@ -80,7 +80,7 @@ class ResNetBase(nn.Module):
         """
 
         super(type(self), self).__init__()
-        network = list()
+        network = []
         network.append(ResBlock(num_inputs, hidden_conv, kernel_size, norm))
         for j in range(nlayer - 1):
             network.append(ResBlock(hidden_conv, hidden_conv, kernel_size, norm))
@@ -99,9 +99,9 @@ class ResNetBase(nn.Module):
 
 
 class ConvBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, k, norm='weight_norm'):
+    def __init__(self, in_ch, out_ch, k, norm="weight_norm"):
         super(type(self), self).__init__()
-        if norm == 'weight_norm':
+        if norm == "weight_norm":
             net = [
                 weight_norm(nn.Conv1d(in_ch, out_ch, k, padding=int((k - 1) / 2))),
                 nn.ReLU(),
@@ -128,7 +128,7 @@ class ConvBlock(nn.Module):
 
 
 class ResBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, k, norm='weight_norm'):
+    def __init__(self, in_ch, out_ch, k, norm="weight_norm"):
         super(type(self), self).__init__()
         self.conv = ConvBlock(in_ch, out_ch, k, norm)
         if in_ch != out_ch:

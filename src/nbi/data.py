@@ -1,5 +1,6 @@
-import numpy as np
 import copy
+
+import numpy as np
 from torch.utils.data import Dataset
 
 
@@ -46,7 +47,7 @@ class BaseContainer(Dataset):
         return len(self.x)
 
     def __getitem__(self, i, **kwargs):
-        x, y = np.load(self.x[i], allow_pickle = True), self.y[i]
+        x, y = np.load(self.x[i], allow_pickle=True), self.y[i]
         if self.process is not None:
             x, y = self.process(x, y)
         if len(x.shape) == 1:
