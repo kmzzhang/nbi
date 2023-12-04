@@ -1,8 +1,5 @@
-import os
-
-os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
-
 import copy
+import os
 
 import corner
 import matplotlib.pyplot as plt
@@ -22,11 +19,13 @@ from torch.utils.data import DataLoader, dataloader
 from tqdm import tqdm
 from tqdm.notebook import tqdm as tqdmn
 
-dataloader.multiprocessing = mp
-
 from .data import BaseContainer
 from .model import DataParallelFlow, get_featurizer, get_flow
 from .utils import iid_gaussian, log_like_iidg, parallel_simulate
+
+dataloader.multiprocessing = mp
+
+os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 
 
 class NBI:
