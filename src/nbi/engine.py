@@ -1,8 +1,9 @@
+# rull: noqa: E402 F401
+import copy
 import os
 
+# this needs to go in before importing torch
 os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
-
-import copy
 
 import corner
 import matplotlib.pyplot as plt
