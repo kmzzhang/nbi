@@ -32,7 +32,7 @@ reduce performance (see [issue](https://github.com/pytorch/pytorch/issues/107534
 Also support for `weight_norm` on Mac M1-M3 GPUs is recently
 [implemented](https://github.com/pytorch/pytorch/pull/108008) but has not been included in a stable
 release yet. Installing the nightly version from source also enables `weight_norm` for
-the MPS device. 
+the MPS device.
 
 ```bash
 git clone --recursive https://github.com/pytorch/pytorch
