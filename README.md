@@ -27,8 +27,12 @@ cd nbi
 pip install .
 ```
 
-If you are using M1/M2 Mac **CPU**, you might want to install PyTorch from source and disable NNPACK, which is known to
-reduce performance (see [issue](https://github.com/pytorch/pytorch/issues/107534)).
+If you are using Mac ARM **CPU** (i.e. M1/M2/M3), you might want to install PyTorch from source and disable NNPACK, which is known to
+reduce performance (see [issue](https://github.com/pytorch/pytorch/issues/107534)). Note that currently the `MPS`
+Also support for `weight_norm` on Mac M1-M3 GPUs is recently
+[implemented](https://github.com/pytorch/pytorch/pull/108008) but has not been included in a stable
+release yet. Installing the nightly version from source also enables `weight_norm` for
+the MPS device. 
 
 ```bash
 git clone --recursive https://github.com/pytorch/pytorch
@@ -80,10 +84,6 @@ engine.fit(
 )
 y_pred, weights = engine.predict(x_obs, x_err, n_samples=2000)
 ```
-
-Note that currently the `MPS` backend (M1/M2 GPU) does not support weight normalization,
-which is used by the ResNet-GRU network. You may specify 'norm': 'weight_norm' instead, although
-the performance has not been examined.
 
 ## References
 
