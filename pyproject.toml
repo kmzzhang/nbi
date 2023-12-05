@@ -26,9 +26,7 @@ dependencies = [
     "pytest",
     "tqdm",
     "multiprocess",
-    "wandb",
-    "black",
-    "flake8",
+    "wandb"
 ]
 
 [project.urls]
