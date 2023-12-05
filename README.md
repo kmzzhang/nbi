@@ -85,15 +85,6 @@ engine.fit(
 y_pred, weights = engine.predict(x_obs, x_err, n_samples=2000)
 ```
 
-<<<<<<< HEAD
-Note that currently the `MPS` backend (M1/M2 GPU) does not support weight normalization,
-which is used by the ResNet-GRU network. You may specify 'norm': 'weight_norm' instead, although
-the performance has not been examined.
-
-=======
-
-> > > > > > > upstream/main
-
 ## References
 
 nbi: the Astronomer's Package for Neural Posterior Estimation
