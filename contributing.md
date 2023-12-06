@@ -14,6 +14,7 @@ git remote add upstream https://github.com/kmzzhang/nbi.git
 You'll need to add `pre-commit` hooks by:
 
 ```bash
+pip install pre-commit
 pre-commit install
 ```
 
