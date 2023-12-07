@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import multiprocess as mp
 import numpy as np
 import torch
+import wandb
 from multiprocess import Pool
 from torch import optim
 from torch.optim.lr_scheduler import (
@@ -156,8 +157,8 @@ class NBI:
 
         self.epoch = 0
         self.prev_clip = 1e8
-        self.tloss = []
-        self.vloss = []
+        self.train_losses = []
+        self.val_losses = []
 
         self.x_mean = None
         self.x_std = None
@@ -185,7 +186,7 @@ class NBI:
         self.y_all = []
         self.weights = []
         self.neff = []
-        self.state_dict_0 = self.get_state_dict()
+        self.state_dict_0 = copy.deepcopy(self.get_network().state_dict())
 
         self.prev_state = []
         self.prev_x_mean = []
@@ -217,7 +218,7 @@ class NBI:
         n_reuse=0,
         batch_size=64,
         project="test",
-        wandb_enabled=False,
+        use_wandb=False,
         neff_stop=-1,
         early_stop_train=False,
         early_stop_patience=-1,
@@ -279,7 +280,7 @@ class NBI:
         project : str, optional
             Name of the project for logging.
 
-        wandb_enabled : bool, optional
+        use_wandb : bool, optional
             If True, enables wandb logging.
 
         neff_stop : int, optional
@@ -318,6 +319,7 @@ class NBI:
         -------
 
         """
+        # either simulate n_sims or provide pre computed samples
         assert n_sims > 0 or y is not None
 
         if type(noise) == np.ndarray:
@@ -336,7 +338,10 @@ class NBI:
         self.x = x
         self.y = y
 
-        self._init_wandb(project, wandb_enabled)
+        # this needs revision in another version
+        self.wandb = use_wandb
+        if self.wandb:
+            self._init_wandb(project)
 
         if min_lr is None:
             min_lr = min(lr, lr / (n_sims / batch_size * n_epochs) * 10)
@@ -369,24 +374,32 @@ class NBI:
                 if self.wandb:
                     wandb.log(
                         {
-                            "Train Loss": self.training_losses[-1],
-                            "Val Loss": self.validation_losses[-1],
+                            "Train Loss": self.train_losses[-1][-1],
+                            "Val Loss": self.val_losses[-1][-1],
                         }
                     )
 
-                self.save_state_dict()
+                self.save_params(
+                    os.path.join(self.directory, str(self.round), str(epoch) + ".pth")
+                )
 
-                if self.stop_training(early_stop_patience):
+                epoch_best = np.argmin(self.val_losses[-1])
+                if epoch_best < (epoch - early_stop_patience):
                     print(
                         "early stopping, loading state dict from epoch",
-                        self.epoch - early_stop_patience - 2,
+                        epoch_best,
                     )
-                    self.load_state_dict(self.epoch - early_stop_patience - 2)
+
+                    # load from the epoch with lowest validation loss
+                    path = os.path.join(
+                        self.directory, str(self.round), str(epoch_best) + ".pth"
+                    )
+                    self.set_params(path)
                     break
 
-            self.save_current_state()
             self.round += 1
 
+            # stop here for ANPE
             if n_rounds == 1:
                 return
 
@@ -395,63 +408,41 @@ class NBI:
             if self.round > 0 and plot:
                 self.weighted_corner(x_obs, y_true)
 
-            # early stopping
+            # stop further rounds of SNPE?
+            # option 1: enough effective posterior samples
             if np.sum(self.neff) > neff_stop > 0:
                 print("Success: Exceed specified stopping sample size!")
-                self._corner_all()
+                if plot:
+                    self._corner_all()
                 return
 
+            # option 2: surrogate posterior is good enough (in terms of efficiency)
             f_accept_round = self.neff[-1] / n_sims
             if self.neff[-1] / n_sims > f_accept_min > 0:
                 print(f"Success: Sampling efficiency is {f_accept_round:.1f}!")
-                self._corner_all()
+                if plot:
+                    self._corner_all()
                 return
 
+            # option 3: surrogate posterior from last round was better
+            # do: load state from previous round
             if early_stop_train and self.round > 1:
                 if 1 < self.neff[-1] < self.neff[-2]:
                     print(
                         "Early stop: Surrogate posterior did not improve for this round"
                     )
-                    self.load_prev_state(self.round - 2)
+
+                    epoch_best = np.argmin(self.val_losses[-2])
+                    # path_round = os.path.join()
+                    path = os.path.join(
+                        self.directory, str(self.round - 2), str(epoch_best) + ".pth"
+                    )
+                    self.set_params(path)
+
                     return
 
         if x_obs is not None:
             self._corner_all()
-
-    def save_current_state(self):
-        """
-        Saves the network state from current round.
-
-        Returns
-        -------
-
-        """
-        prev_state = self.get_state_dict()
-        self.prev_state.append(prev_state)
-        self.prev_x_mean.append(self.x_mean)
-        self.prev_x_std.append(self.x_std)
-        self.prev_y_mean.append(self.y_mean)
-        self.prev_y_std.append(self.y_std)
-
-    def load_prev_state(self, round):
-        """
-        Load state of the engine from a previous round.
-
-        Parameters
-        ----------
-        round : int
-            Round number to load state from.
-
-        Returns
-        -------
-
-        """
-        print("Loaded state from round ", round)
-        self.get_network().load_state_dict(self.prev_state[round])
-        self.x_mean = self.prev_x_mean[round]
-        self.x_std = self.prev_x_std[round]
-        self.y_mean = self.prev_y_mean[round]
-        self.y_std = self.prev_y_std[round]
 
     def _corner_all(self):
         """
@@ -524,28 +515,6 @@ class NBI:
 
         except:
             print("corner plot failed")
-
-    def stop_training(self, patience=1):
-        """
-        Early stopping criteria based on validation loss.
-
-        Parameters
-        ----------
-        patience : int
-            Number of epochs without improvement to trigger early stopping.
-
-        Returns
-        -------
-        bool
-            True if early stopping criteria is met.
-
-        """
-        if self.epoch < patience + 2 or patience == -1:
-            return False
-
-        prev_losses = np.array(self.vloss[-1 * patience - 1 :])
-        base_loss = self.vloss[-1 * patience - 2]
-        return (prev_losses > base_loss).all()
 
     def result(self):
         """
@@ -703,64 +672,35 @@ class NBI:
         else:
             return self.network
 
-    def get_state_dict(self):
-        """
-        Returns the current network state dictionary.
-
-        Returns
-        -------
-
-        """
-        return copy.deepcopy(self.get_network().state_dict())
-
-    def load_state_dict(self, epoch):
-        """
-        Loads the network state dictionary from a previous epoch.
-
-        Parameters
-        ----------
-        epoch : int
-            Epoch number to load state from.
-
-        Returns
-        -------
-
-        """
-        path_round = os.path.join(self.directory, str(self.round))
-        path = os.path.join(path_round, str(epoch) + ".pth")
-        self.get_network().load_state_dict(torch.load(path, map_location=self.device))
-
-    def set_params(self, network, x_scale, y_scale):
+    def set_params(self, state_dict):
         """
         Load engine parameters from disk, including network weights and data pre-processing scales.
 
         Parameters
         ----------
-        network : str
-            Path of network state dict.
-        x_scale : str or ndarray
-            Path of x-scale or x-scale array.
-        y_scale : str or ndarray
-            Path of y-scale or y-scale array.
+        state_dict : str or state dict
+            State dict or path to saved state dict containing three keys:
+            network_state_dict, x_scale, y_scale
 
         Returns
         -------
 
         """
-        if type(x_scale) == str:
-            x_scale = np.load(x_scale)
-        if type(y_scale) == str:
-            y_scale = np.load(y_scale)
+        if type(state_dict) == str:
+            state_dict = torch.load(state_dict, map_location=self.device)
+        model_state_dict = state_dict["model_state_dict"]
+
+        # Move x_scale and y_scale to CPU before converting to numpy arrays
+        x_scale = state_dict["x_scale"].cpu().numpy()
+        y_scale = state_dict["y_scale"].cpu().numpy()
 
         self.x_mean = x_scale[0]
         self.x_std = x_scale[1]
         self.y_mean = y_scale[0]
         self.y_std = y_scale[1]
-        self.get_network().load_state_dict(
-            torch.load(network, map_location=self.device)
-        )
+        self.get_network().load_state_dict(model_state_dict)
 
-    def save_state_dict(self):
+    def get_params(self):
         """
         Saves the network weights and pre-processing scales to disk
 
@@ -768,14 +708,34 @@ class NBI:
         -------
 
         """
-        path_round = os.path.join(self.directory, str(self.round))
-        path_network = os.path.join(path_round, str(self.epoch) + ".pth")
-        torch.save(self.get_state_dict(), path_network)
+        x_scale = np.array([self.x_mean, self.x_std])
+        y_scale = np.array([self.y_mean, self.y_std])
 
-        path_xscales = os.path.join(path_round, "x_scales.npy")
-        path_yscales = os.path.join(path_round, "y_scales.npy")
-        np.save(path_xscales, np.array([self.x_mean, self.x_std]))
-        np.save(path_yscales, np.array([self.y_mean, self.y_std]))
+        # Convert numpy arrays to PyTorch tensors
+        x_scale_tensor = torch.from_numpy(x_scale)
+        y_scale_tensor = torch.from_numpy(y_scale)
+
+        # Assuming 'network' is your model
+        model_state_dict = copy.deepcopy(self.get_network().state_dict())
+
+        # Create a new dictionary to store model state and additional tensors
+        state_dict = {
+            "model_state_dict": model_state_dict,
+            "x_scale": x_scale_tensor,
+            "y_scale": y_scale_tensor,
+        }
+        return state_dict
+
+    def save_params(self, path):
+        """
+        Saves the network weights and pre-processing scales to disk
+
+        Returns
+        -------
+
+        """
+        state_dict = self.get_params()
+        torch.save(state_dict, path)
 
     def scale_y(self, y, back=False):
         """
@@ -1048,7 +1008,7 @@ class NBI:
         if self.clip > 0:
             self.prev_clip = np.percentile(np.array(self.norm), self.clip)
         train_loss = np.array(train_loss).mean()
-        self.tloss.append(train_loss)
+        self.train_losses[-1].append(train_loss)
 
     def _validate_step(self):
         """
@@ -1079,9 +1039,9 @@ class NBI:
 
         val_loss = np.median(val_loss)
         pbar.set_description(f"- Val, Loglike in nats: {-val_loss:.6f}")
-        self.vloss.append(val_loss)
+        self.val_losses[-1].append(val_loss)
 
-    def _init_wandb(self, project, enable):
+    def _init_wandb(self, project):
         """
         Initialize weights & biases logging.
 
@@ -1089,23 +1049,13 @@ class NBI:
         ----------
         project : str
             Project name.
-        enable : bool
-            If True, enable weights & biases logging.
 
         Returns
         -------
 
         """
-        self.wandb = enable
-        if enable:
-            try:
-                import wandb
-            except ModuleNotFoundError:
-                print("weights & biases not installed")
-                self.wandb = False
-                return
-            wandb.init(project=project, config=self.args, name=self.name)
-            wandb.watch(self.network)
+        wandb.init(project=project, config=self.args, name=self.name)
+        wandb.watch(self.network)
 
     def _init_train(self, lr, clip=85):
         """
@@ -1128,8 +1078,8 @@ class NBI:
         self.optimizer = optim.Adam(self.network.parameters(), lr=lr)
 
         torch.manual_seed(0)
-        self.training_losses = []
-        self.validation_losses = []
+        self.train_losses.append([])
+        self.val_losses.append([])
 
     def _init_scheduler(
         self, min_lr, decay_type="SGDR", patience=5, decay_threshold=0.01
@@ -1183,7 +1133,7 @@ class NBI:
 
         """
         if self.decay_type == "plateau":
-            self.scheduler.step(self.training_losses[-1])
+            self.scheduler.step(self.train_losses[-1][-1])
         else:
             self.scheduler.step()
 

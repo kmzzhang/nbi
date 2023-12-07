@@ -1,3 +1,8 @@
+import warnings
+
+warnings.filterwarnings("ignore")
+warnings.simplefilter("ignore")
+
 import nbi
 import numpy as np
 from scipy.stats import uniform
@@ -62,24 +67,21 @@ def test():
     engine.fit(
         x_obs=x_obs,
         y_true=y_true,
-        n_sims=1280,
-        n_rounds=1,
-        n_epochs=1,
-        batch_size=64,
+        n_sims=320,
+        n_rounds=3,
+        n_epochs=100,
+        batch_size=32,
         lr=0.001,
         min_lr=0.001,
         early_stop_train=True,  # If sampling efficiency is reduced, stop and revert to previous round
-        early_stop_patience=10,  # Within a round, wait this many epochs before early stopping
+        early_stop_patience=1,  # Within a round, wait this many epochs before early stopping
         noise=np.array([1] * 50),  # homogeneous noise; used for importance sampling
-        workers=4,
+        workers=10,
+        plot=False,
     )
 
     y_pred, weights = engine.predict(
-        x_obs,
-        x_err=np.array([0.2] * 50),
-        y_true=y_true,
-        n_samples=10000,
-        corner_reweight=True,
+        x_obs, x_err=np.array([0.2] * 50), y_true=y_true, n_samples=10000
     )
 
 
