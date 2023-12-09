@@ -61,9 +61,11 @@ class NBI:
 
         If nn.Module, it's a custom normalizing flow.
 
+        Not required for inference only mode when state_dict is supplied
+
     featurizer : dict or nn.Module
         Dictionary of hyperparameters for the pre-built neural network for dimensionality reduction
-        or a custom PyTorch network module.
+        or (currently not supported uet) a custom PyTorch network module.
 
         If dictionary, the keys include:
             - 'type': Name of pre-built network architecture. Default: 'resnet-gru'.
@@ -76,6 +78,12 @@ class NBI:
 
         If nn.Module, it's a custom featurizer network that maps input sequence of shape [Batch, Channel, Length] to
         output feature vector of shape [Batch, Dimension].
+
+        Not required for inference only mode when state_dict is supplied
+
+    state_dict : str or dictionary, optional
+            State dict or path to saved state dict containing three keys:
+            network_state_dict, x_scale, y_scale. Loads pre-trained model.
 
     simulator : function, optional
         Simulator function to generate data. Requires input of model parameters and returns simulated data.
@@ -124,8 +132,9 @@ class NBI:
 
     def __init__(
         self,
-        flow,
-        featurizer,
+        flow=None,
+        featurizer=None,
+        state_dict=None,
         simulator=None,
         priors=None,
         device="cpu",
@@ -138,22 +147,29 @@ class NBI:
     ):
         self.device = device
         self.init_env()
-        flow_config_all = copy.copy(self.default_flow_config)
-        flow_config_all.update(flow)
-        self.corner_kwargs.update({"labels": labels})
-        self.network_reinit = network_reinit
-        self.scale_reinit = scale_reinit
 
-        # if featurizer is not user provided pytorch module
-        # generate featurizer network based on user specified type and hyperparameters
-        if type(featurizer) == dict:
-            featurizer = get_featurizer(featurizer.pop("type"), featurizer)
-            flow_config_all["num_cond_inputs"] = featurizer.num_outputs
+        if state_dict is not None:
+            _state_dict = torch.load(state_dict)
+            flow_config_all = _state_dict["flow_config"]
+            featurizer = _state_dict["featurizer_config"]
+        else:
+            flow_config_all = copy.copy(self.default_flow_config)
+            flow_config_all.update(flow)
+
+        self.featurizer_config = copy.copy(featurizer)
+        featurizer = get_featurizer(featurizer["type"], featurizer)
+
+        flow_config_all["num_cond_inputs"] = featurizer.num_outputs
+        self.flow_config = flow_config_all
 
         self.network = get_flow(featurizer, **flow_config_all)
         self.network = DataParallelFlow(self.network).to(
             self.device, dtype=torch.float32
         )
+
+        self.corner_kwargs.update({"labels": labels})
+        self.network_reinit = network_reinit
+        self.scale_reinit = scale_reinit
 
         self.epoch = 0
         self.prev_clip = 1e8
@@ -187,6 +203,7 @@ class NBI:
         self.weights = []
         self.neff = []
         self.state_dict_0 = copy.deepcopy(self.get_network().state_dict())
+        self.best_params = None
 
         self.prev_state = []
         self.prev_x_mean = []
@@ -203,6 +220,9 @@ class NBI:
             self.tqdm = tqdmn
         else:
             self.tqdm = tqdm
+
+        if state_dict is not None:
+            self.set_params(state_dict)
 
     def fit(
         self,
@@ -371,6 +391,7 @@ class NBI:
                 self._train_step()
                 self._step_scheduler()
                 self._validate_step()
+
                 if self.wandb:
                     wandb.log(
                         {
@@ -379,9 +400,11 @@ class NBI:
                         }
                     )
 
-                self.save_params(
-                    os.path.join(self.directory, str(self.round), str(epoch) + ".pth")
+                path = os.path.join(
+                    self.directory, str(self.round), str(epoch) + ".pth"
                 )
+
+                self.save_params(path)
 
                 epoch_best = np.argmin(self.val_losses[-1])
                 if epoch_best < (epoch - early_stop_patience):
@@ -398,6 +421,7 @@ class NBI:
                     break
 
             self.round += 1
+            self.best_params = path
 
             # stop here for ANPE
             if n_rounds == 1:
@@ -405,7 +429,7 @@ class NBI:
 
             self.prepare_data(x_obs, n_sims)
 
-            if self.round > 0 and plot:
+            if plot:
                 self.weighted_corner(x_obs, y_true)
 
             # stop further rounds of SNPE?
@@ -437,11 +461,12 @@ class NBI:
                     path = os.path.join(
                         self.directory, str(self.round - 2), str(epoch_best) + ".pth"
                     )
+                    self.best_params = path
                     self.set_params(path)
 
                     return
 
-        if x_obs is not None:
+        if plot:
             self._corner_all()
 
     def _corner_all(self):
@@ -686,6 +711,7 @@ class NBI:
         -------
 
         """
+
         if type(state_dict) == str:
             state_dict = torch.load(state_dict, map_location=self.device)
         model_state_dict = state_dict["model_state_dict"]
@@ -723,6 +749,8 @@ class NBI:
             "model_state_dict": model_state_dict,
             "x_scale": x_scale_tensor,
             "y_scale": y_scale_tensor,
+            "flow_config": self.flow_config,
+            "featurizer_config": self.featurizer_config,
         }
         return state_dict
 
@@ -794,6 +822,7 @@ class NBI:
         n_max=-1,
         corner=False,
         corner_reweight=False,
+        seed=None,
     ):
         """
         Generates the posterior distribution of parameters given input data.
@@ -820,7 +849,8 @@ class NBI:
             If True, generates a corner plot of the posterior before reweighting.
         corner_reweight : bool, optional
             If True, generates a corner plot of the posterior after reweighting.
-
+        seed : int, optional
+            Random seed for generating parameters
         Returns
         -------
         ys : ndarray
@@ -829,6 +859,10 @@ class NBI:
             Importance weights.
 
         """
+        if seed is not None:
+            torch.manual_seed(seed)
+            np.random.seed(seed)
+
         self.like = log_like_iidg(x_err) if type(x_err) == np.ndarray else log_like
 
         if self.round == 0:

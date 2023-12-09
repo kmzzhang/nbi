@@ -29,7 +29,7 @@ def test():
     np.random.seed(0)
 
     # draw random parameter from prior
-    y_true = [var.rvs(1)[0] for var in priors]
+    y_true = np.array([var.rvs(1)[0] for var in priors])
 
     # add fixed gaussian noise of 1
     x_err = 1
@@ -60,6 +60,7 @@ def test():
         simulator=sine,
         priors=priors,
         labels=labels,
+        path="test",
         device="cpu",
         n_jobs=10,
     )
@@ -80,9 +81,26 @@ def test():
         plot=False,
     )
 
-    y_pred, weights = engine.predict(
-        x_obs, x_err=np.array([0.2] * 50), y_true=y_true, n_samples=10000
+    y, w = engine.predict(
+        x_obs, x_err=np.array([0.2] * 50), y_true=y_true, n_samples=1000, seed=0
     )
+
+    # loading the best model should return the same posterior samples
+    best_params = engine.best_params
+    engine = nbi.NBI(
+        state_dict=best_params,
+        simulator=sine,
+        priors=priors,
+        labels=labels,
+        path="test",
+        device="cpu",
+        n_jobs=10,
+    )
+    y1, w1 = engine.predict(
+        x_obs, x_err=np.array([0.2] * 50), y_true=y_true, n_samples=1000, seed=0
+    )
+
+    assert np.allclose(y, y1)
 
 
 if __name__ == "__main__":
