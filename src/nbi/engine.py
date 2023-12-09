@@ -406,6 +406,8 @@ class NBI:
 
                 self.save_params(path)
 
+                # if the validation loss has not improved by early_stop_patience epochs
+                # load the epoch with lowest validation loss, i.e., epoch_best
                 epoch_best = np.argmin(self.val_losses[-1])
                 if epoch_best < (epoch - early_stop_patience):
                     print(
@@ -423,10 +425,14 @@ class NBI:
             self.round += 1
             self.best_params = path
 
-            # stop here for ANPE
+            # If we're doing Amortized Neural Posterior Estimation (n_rounds=1)
+            # then the rest of the code is irrelavant
             if n_rounds == 1:
                 return
 
+            # Produce the training set for the next rounds
+            # Even if we're at the last round, still need to produce these simulations for
+            # importance sample
             self.prepare_data(x_obs, n_sims)
 
             if plot:
