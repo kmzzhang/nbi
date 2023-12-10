@@ -88,9 +88,8 @@ y_pred, weights = engine.predict(x_obs, x_err, n_samples=2000)
 ## References
 
 nbi: the Astronomer's Package for Neural Posterior Estimation
-([Zhang et al. 2023](https://ml4astro.github.io/icml2023/assets/71.pdf)).
-Accepted to the "Machine Learning for Astrophysics" workshop at the 2023
-International Conference for Machine Learning (ICML). Will be posted to arXiv soon.
+([Zhang et al. 2023](https://arxiv.org/abs/2312.03824)). Accepted to NeurIPS 2023 Workshop on Deep Learning and
+Inverse Problems.
 
 Masked Autoregressive Flow for Density Estimation (Papamakarios et al. 2017)\
 https://arxiv.org/abs/1705.07057
