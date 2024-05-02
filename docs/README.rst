@@ -123,4 +123,4 @@ Work on this project was supported by the `National Science Foundation award #22
 
 .. raw:: html
 
-   <center><img src="https://www.nsf.gov/policies/images/NSF_Official_logo.svg" width="10%"></center>
+   <center><img src="https://new.nsf.gov/themes/custom/nsf_theme/components/images/logo/logo-desktop.svg" width="30%"></center>

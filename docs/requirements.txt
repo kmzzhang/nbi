@@ -11,3 +11,4 @@ joblib
 pytest
 tqdm
 multiprocess
+wandb

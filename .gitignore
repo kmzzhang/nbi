@@ -4,3 +4,8 @@ src/nbi.egg-info/
 \#*
 **/__pycache__
 *~
+
+*.DS_Store
+
+# Sphinx documentation
+docs/_build/
