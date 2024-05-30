@@ -1021,16 +1021,11 @@ class NBI:
         train_loss = []
         with self.tqdm(total=len(self.train_loader.dataset)) as pbar:
             for batch_idx, data in enumerate(self.train_loader):
-                if len(data) == 2:
-                    x, y = data
-                    aux = None
-                else:
-                    x, y, aux = data
-                    aux = aux.to(self.device, dtype=torch.float32)
+                x, y = data
                 x = self.scale_x(x).to(self.device, dtype=torch.float32)
                 y = self.scale_y(y).to(self.device, dtype=torch.float32)
                 self.optimizer.zero_grad()
-                loss = self.network(x, y, aux=aux)
+                loss = self.network(x, y)
                 loss = loss.mean()
                 train_loss.append(loss.item())
                 loss.backward()
@@ -1262,11 +1257,7 @@ class NBI:
         y_list = []
         n = 0
         for batch_idx, data in enumerate(self.train_loader):
-            if len(data) == 2:
-                x, y = data
-                aux = None
-            else:
-                x, y, aux = data
+            x, y = data
             x_list.append(x.cpu().numpy())
             y_list.append(y.cpu().numpy())
             n += x_list[-1].shape[0]
