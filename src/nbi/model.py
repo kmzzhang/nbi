@@ -35,15 +35,20 @@ class Flow(nn.Module):
     ):
         if sample:
             if not is_feature:
-                cond_vector = self.featurizer(x, aux)
+                cond_vector = self.featurizer(x)  # , aux)
             else:
                 cond_vector = x
             return self.flow.sample(num_samples=n, cond_inputs=cond_vector)
 
         if not is_feature:
-            cond_vector = self.featurizer(x, aux)
+            cond_vector = self.featurizer(x)  # , aux)
         else:
             cond_vector = x
+
+        # if the channel dimension is (B, C1, C2, ..., D), reshape cond_vector into (B, -1)
+        if len(cond_vector.shape) > 2:
+            cond_vector = cond_vector.reshape(cond_vector.shape[0], -1)
+
         self.cond_vector = cond_vector
         neg_log_probs = -1 * self.flow.log_probs(y, cond_vector)
         if reduce:

@@ -151,15 +151,20 @@ class NBI:
         if state_dict is not None:
             _state_dict = torch.load(state_dict)
             flow_config_all = _state_dict["flow_config"]
-            featurizer = _state_dict["featurizer_config"]
+            featurizer = (
+                featurizer
+                if featurizer is not None
+                else _state_dict["featurizer_config"]
+            )
         else:
             flow_config_all = copy.copy(self.default_flow_config)
             flow_config_all.update(flow)
 
-        self.featurizer_config = copy.copy(featurizer)
-        featurizer = get_featurizer(featurizer["type"], featurizer)
+        if type(featurizer) == dict:
+            featurizer = get_featurizer(featurizer["type"], featurizer)
+            flow_config_all["num_cond_inputs"] = featurizer.num_outputs
 
-        flow_config_all["num_cond_inputs"] = featurizer.num_outputs
+        self.featurizer_config = copy.copy(featurizer)
         self.flow_config = flow_config_all
 
         self.network = get_flow(featurizer, **flow_config_all)
@@ -409,21 +414,24 @@ class NBI:
                 # if the validation loss has not improved by early_stop_patience epochs
                 # load the epoch with lowest validation loss, i.e., epoch_best
                 epoch_best = np.argmin(self.val_losses[-1])
-                if epoch_best < (epoch - early_stop_patience):
+                self.best_params = os.path.join(
+                    self.directory, str(self.round), str(epoch_best) + ".pth"
+                )
+
+                if early_stop_patience > 0 and epoch_best < (
+                    epoch - early_stop_patience
+                ):
                     print(
                         "early stopping, loading state dict from epoch",
                         epoch_best,
                     )
 
                     # load from the epoch with lowest validation loss
-                    path = os.path.join(
-                        self.directory, str(self.round), str(epoch_best) + ".pth"
-                    )
-                    self.set_params(path)
+
+                    self.set_params(self.best_params)
                     break
 
             self.round += 1
-            self.best_params = path
 
             # If we're doing Amortized Neural Posterior Estimation (n_rounds=1)
             # then the rest of the code is irrelavant
@@ -740,8 +748,8 @@ class NBI:
         -------
 
         """
-        x_scale = np.array([self.x_mean, self.x_std])
-        y_scale = np.array([self.y_mean, self.y_std])
+        x_scale = np.array([self.x_mean, self.x_std], dtype=np.float32)
+        y_scale = np.array([self.y_mean, self.y_std], dtype=np.float32)
 
         # Convert numpy arrays to PyTorch tensors
         x_scale_tensor = torch.from_numpy(x_scale)
@@ -811,10 +819,6 @@ class NBI:
         if back:
             return x * self.x_std + self.x_mean
         else:
-            # shape needs to be (N, D, L) for ResNet-GRU
-            # todo: make more generic
-            if len(x.shape) != 3:
-                x = np.expand_dims(x, axis=list(range(3 - len(x.shape))))
             return (x - self.x_mean) / self.x_std
 
     def predict(
@@ -1270,8 +1274,8 @@ class NBI:
                 break
         x_list = np.concatenate(x_list, axis=0)
         y_list = np.concatenate(y_list, axis=0)
-        self.x_mean = x_list.mean(0).mean(-1, keepdims=True)
-        self.x_std = x_list.mean(0).std(-1, keepdims=True)
+        self.x_mean = x_list.mean(-1, keepdims=True).mean(0, keepdims=True)
+        self.x_std = x_list.std(-1, keepdims=True).mean(0, keepdims=True)
         self.y_mean = y_list.mean(0, keepdims=True)
         self.y_std = y_list.std(0, keepdims=True)
 

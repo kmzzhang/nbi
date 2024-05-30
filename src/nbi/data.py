@@ -47,10 +47,11 @@ class BaseContainer(Dataset):
         return len(self.x)
 
     def __getitem__(self, i, **kwargs):
-        x, y = np.load(self.x[i], allow_pickle=True), self.y[i]
+        if type(self.x[i]) == str:
+            x, y = np.load(self.x[i], allow_pickle=True), self.y[i]
+        else:
+            x, y = self.x[i], self.y[i]
         if self.process is not None:
             x, y = self.process(x, y)
-        if len(x.shape) == 1:
-            return x[None, :], y
-        else:
-            return x, y
+
+        return np.atleast_2d(x), y
