@@ -47,7 +47,7 @@ class BaseContainer(Dataset):
         return len(self.x)
 
     def __getitem__(self, i, **kwargs):
-        if type(self.x[i]) == str:
+        if isinstance(self.x[i], np.str_):
             x, y = np.load(self.x[i], allow_pickle=True), self.y[i]
         else:
             x, y = self.x[i], self.y[i]

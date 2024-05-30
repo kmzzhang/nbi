@@ -33,6 +33,7 @@ def add_noise(x_err, x, y=None):
     x: light curve of shape (length,)
     y: parameter of shape (dim,)
     """
+    print(x)
     rand = np.random.normal(0, 1, size=x.shape[0])
     x_noise = x + rand * x_err
     return x_noise, y
