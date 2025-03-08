@@ -52,7 +52,13 @@ def fit_and_predict(engine):
     )
 
     y, w = engine.predict(
-        x_obs, x_err=np.array([0.2] * 50), y_true=y_true, n_samples=1000, seed=0
+        x_obs,
+        x_err=np.array([0.2] * 50),
+        y_true=y_true,
+        n_samples=1000,
+        neff_min=100,
+        f_accept_min=0.1,
+        seed=0,
     )
 
     best_params = engine.best_params
@@ -66,10 +72,35 @@ def fit_and_predict(engine):
         n_jobs=10,
     )
     y1, w1 = engine.predict(
-        x_obs, x_err=np.array([0.2] * 50), y_true=y_true, n_samples=1000, seed=0
+        x_obs,
+        x_err=np.array([0.2] * 50),
+        y_true=y_true,
+        n_samples=1000,
+        neff_min=100,
+        f_accept_min=0.1,
+        seed=0,
     )
 
     assert np.allclose(y, y1)
+
+
+def fit_and_predict_anpe(engine):
+    engine.fit(
+        x_obs=x_obs,
+        n_sims=320,
+        n_rounds=1,
+        n_epochs=1,
+        batch_size=32,
+        lr=0.001,
+        min_lr=0.001,
+        early_stop_train=True,
+        early_stop_patience=1,
+        workers=10,
+        plot=False,
+    )
+
+    y = engine.predict(x_obs, n_samples=1000, seed=0)
+    assert len(y) == 1000
 
 
 def test_default_featurizer():
@@ -101,6 +132,18 @@ def test_default_featurizer():
 
     fit_and_predict(engine)
 
+    engine = nbi.NBI(
+        flow=flow,
+        featurizer=featurizer,
+        simulator=sine,
+        priors=priors,
+        labels=labels,
+        path="test",
+        device="cpu",
+        n_jobs=10,
+    )
+    fit_and_predict_anpe(engine)
+
 
 def test_custom_featurizer():
     flow = {"n_dims": 3, "flow_hidden": 32, "num_blocks": 4, "num_cond_inputs": 64}
@@ -125,6 +168,7 @@ def test_custom_featurizer():
     )
 
     fit_and_predict(engine)
+    fit_and_predict_anpe(engine)
 
 
 if __name__ == "__main__":

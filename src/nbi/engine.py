@@ -829,7 +829,7 @@ class NBI:
         log_like=None,
         n_samples=1000,
         neff_min=0,
-        n_max=-1,
+        f_accept_min=0.001,
         corner=False,
         corner_reweight=False,
         seed=None,
@@ -850,9 +850,10 @@ class NBI:
             sampling when x_err not specified.
         n_samples : int, optional
             Number of posterior samples to generate.
-        neff_min : int, optional
-            Minimum effective sample size required. If neff_min > n_samples, additional simulations will be generated
-            until an ESS of neff_min is reached. Default: 0
+        f_accept_min : float, optional
+            Minimum acceptance rate for importance sampling required. If the acceptance rate is less than f_accept_min,
+            no additional simulations will be generated due to low efficiency. Required only when neff_min > 0.
+            Default: 0.001
         n_max : int, optional
             Maximum number of simulations to generate to achieve neff_min.
         corner : bool, optional
@@ -897,22 +898,27 @@ class NBI:
         print(f"Effective Sample Size = {neff:.1f}")
         print(f"Sampling efficiency = {f_accept * 100:.1f}%")
 
-        if n_max > n_samples and neff > neff_min:
-            n_required = int(n_samples * (1 / f_accept - 1))
-            print("Requires N =", n_required, "more simulations to reach n_samples")
-            n_required = min(n_required, n_max - n_samples)
+        if neff < neff_min:
+            if f_accept > f_accept_min:
+                n_required = int(n_samples * (1 / f_accept - 1))
+                print("Requires N =", n_required, "more simulations to reach n_samples")
+                n_required = min(n_required, n_max - n_samples)
 
-            ys_extra = self._draw_params(x, n_required)
-            x_path, good = self.simulate(ys_extra)
-            x_path = x_path[good]
-            ys_extra = ys_extra[good]
-            weights_extra = self.importance_reweight(x, x_path, ys_extra)
+                ys_extra = self._draw_params(x, n_required)
+                x_path, good = self.simulate(ys_extra)
+                x_path = x_path[good]
+                ys_extra = ys_extra[good]
+                weights_extra = self.importance_reweight(x, x_path, ys_extra)
 
-            neff_extra = 1 / (weights_extra**2).sum() - 1
-            print("Total effective sample size N =", "%.1f" % (neff + neff_extra))
+                neff_extra = 1 / (weights_extra**2).sum() - 1
+                print("Total effective sample size N =", "%.1f" % (neff + neff_extra))
 
-            ys = np.concatenate([ys, ys_extra])
-            weights = np.concatenate([weights, weights_extra])
+                ys = np.concatenate([ys, ys_extra])
+                weights = np.concatenate([weights, weights_extra])
+            else:
+                print(
+                    "Sampling efficiency below f_accept_min. No additional simulations will be generated."
+                )
 
         if corner_reweight:
             self.corner(x, ys, y_true=y_true, weights=weights)
@@ -1243,6 +1249,13 @@ class NBI:
             if np.isinf(logprior).any():
                 print("Samples outside prior N =", np.isinf(logprior).sum())
                 params = params[~np.isinf(logprior)]
+                while len(params) < n:
+                    n_needed = n - len(params)
+                    new_params = self.sample(x, n=n)
+                    new_logprior = self.log_prior(new_params)
+                    new_params = new_params[~np.isinf(new_logprior)]
+                    params = np.concatenate([params, new_params])
+                params = params[:n]
             return params
 
     def _init_scales(self):
