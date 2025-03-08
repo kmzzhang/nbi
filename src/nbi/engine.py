@@ -149,7 +149,9 @@ class NBI:
         self.init_env()
 
         if state_dict is not None:
-            _state_dict = torch.load(state_dict)
+            _state_dict = torch.load(
+                state_dict, map_location=self.device, weights_only=False
+            )
             flow_config_all = _state_dict["flow_config"]
             featurizer = (
                 featurizer
@@ -727,7 +729,9 @@ class NBI:
         """
 
         if type(state_dict) == str:
-            state_dict = torch.load(state_dict, map_location=self.device)
+            state_dict = torch.load(
+                state_dict, map_location=self.device, weights_only=False
+            )
         model_state_dict = state_dict["model_state_dict"]
 
         # Move x_scale and y_scale to CPU before converting to numpy arrays
