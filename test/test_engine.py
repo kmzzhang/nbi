@@ -69,7 +69,7 @@ def fit_and_predict(engine):
         labels=labels,
         path="test",
         device="cpu",
-        n_jobs=10,
+        n_jobs=4,
     )
     y1, w1 = engine.predict(
         x_obs,
@@ -127,7 +127,7 @@ def test_default_featurizer():
         labels=labels,
         path="test",
         device="cpu",
-        n_jobs=10,
+        n_jobs=4,
     )
 
     fit_and_predict(engine)
@@ -140,7 +140,7 @@ def test_default_featurizer():
         labels=labels,
         path="test",
         device="cpu",
-        n_jobs=10,
+        n_jobs=4,
     )
     fit_and_predict_anpe(engine)
 
@@ -164,7 +164,7 @@ def test_custom_featurizer():
         labels=labels,
         path="test",
         device="cpu",
-        n_jobs=10,
+        n_jobs=4,
     )
 
     fit_and_predict(engine)

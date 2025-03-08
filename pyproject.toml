@@ -17,8 +17,8 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "torch>=1.4",
-    "numpy",
+    "torch>=2.0.0",
+    "numpy<2.0.0",
     "scipy",
     "matplotlib",
     "corner",
