@@ -633,6 +633,10 @@ class NBI:
         log_weights = loglike + logprior - logproposal
 
         bad = np.isnan(log_weights) + np.isinf(log_weights)
+        valid_weights = log_weights[~bad]
+        if len(valid_weights) == 0:
+            print("All log weights are NaN or Inf — skipping this round!")
+            return np.zeros_like(log_weights)
         log_weights -= log_weights[~bad].max()
 
         weights = np.exp(log_weights)
