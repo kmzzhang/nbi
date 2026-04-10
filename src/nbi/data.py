@@ -2,6 +2,7 @@ import copy
 
 import numpy as np
 from torch.utils.data import Dataset
+from torch.utils.data import Subset
 
 
 class Data:
@@ -55,3 +56,77 @@ class BaseContainer(Dataset):
             x, y = self.process(x, y)
 
         return np.atleast_2d(x), y
+
+class ProcessedTorchDataset(Dataset):
+    """
+    Wrap a torch Dataset and apply `process` on-the-fly in __getitem__.
+
+    Supports datasets that return:
+      - x
+      - (x, y)
+    and supports process signatures:
+      - process(x, y) -> (x2, y2)
+      - process(x)    -> x2
+    """
+    def __init__(self, dataset, process=None):
+        self.dataset = dataset
+        self.process = process
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        out = self.dataset[idx]
+
+        # Normalize to (x, y)
+        if isinstance(out, (tuple, list)) and len(out) == 2:
+            x, y = out
+        else:
+            x, y = out, None
+
+        if self.process is None:
+            return out
+
+        # Apply process
+        try:
+            outp = self.process(x, y)
+        except TypeError:
+            outp = self.process(x)
+
+        return outp
+
+class DatasetContainer:
+    """
+    Container wrapper for torch Datasets so NBI can reuse _init_loader().
+    Provides the same get_splits() API as BaseContainer, and supports `process`
+    applied in __getitem__ (like BaseContainer).
+    """
+    def __init__(self, dataset, f_val=0.1, f_test=0.0, seed=0, process=None):
+        self.dataset = dataset
+        self.f_val = float(f_val)
+        self.f_test = float(f_test)
+        self.seed = int(seed)
+        self.process = process
+
+        # Wrap so process is applied for any subset indexing
+        if self.process is not None:
+            self.dataset = ProcessedTorchDataset(self.dataset, self.process)
+
+    def get_splits(self):
+        n = len(self.dataset)
+        rng = np.random.default_rng(self.seed)
+        idx = np.arange(n)
+        rng.shuffle(idx)
+
+        n_test = int(self.f_test * n)
+        n_val  = int(self.f_val * n)
+
+        test_idx  = idx[:n_test]
+        val_idx   = idx[n_test:n_test + n_val]
+        train_idx = idx[n_test + n_val:]
+
+        return (
+            Subset(self.dataset, train_idx),
+            Subset(self.dataset, val_idx),
+            Subset(self.dataset, test_idx),
+        )

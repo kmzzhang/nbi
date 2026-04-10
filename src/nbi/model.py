@@ -1,11 +1,40 @@
 from torch import nn
+import torch
 
 from .nn import RNN, ResNet, flows
 
+class MultiFeaturizer(nn.Module):
+    """
+    Wraps a list of featurizers into a single module.
+
+    Expects x to be a list/tuple of tensors, one per channel.
+    Returns concatenated feature vector: [B, sum_j out_j]
+    """
+    def __init__(self, featurizers):
+        super().__init__()
+        self.featurizers = nn.ModuleList(featurizers)
+        # expose num_outputs so flow can size conditioning dim
+        self.num_outputs = int(sum(getattr(f, "num_outputs", 0) for f in featurizers))
+
+    def forward(self, x):
+        if not isinstance(x, (list, tuple)):
+            raise TypeError(f"MultiFeaturizer expects x as list/tuple, got {type(x)}")
+
+        if len(x) != len(self.featurizers):
+            raise ValueError(f"x has {len(x)} channels but featurizers has {len(self.featurizers)}")
+
+        feats = []
+        for fj, xj in zip(self.featurizers, x):
+            out = fj(xj)
+            # flatten to [B, -1] if needed
+            if out.ndim > 2:
+                out = out.reshape(out.shape[0], -1)
+            feats.append(out)
+        return torch.cat(feats, dim=1)
 
 class DataParallelFlow(nn.DataParallel):
-    def __init__(self, *args, **kwargs):
-        super(type(self), self).__init__(*args, **kwargs)
+    def __init__(self, module, device_ids=None, output_device=None, dim=0):
+        super().__init__(module, device_ids=device_ids, output_device=output_device, dim=dim)
 
     def sample(self, x, n=1000, is_feature=False):
         if not is_feature:
@@ -17,7 +46,7 @@ class DataParallelFlow(nn.DataParallel):
 
 class Flow(nn.Module):
     def __init__(self, featurizer, model):
-        super(type(self), self).__init__()
+        super().__init__()
         self.featurizer = featurizer
         self.flow = model
 
@@ -85,19 +114,36 @@ def get_featurizer(network_type, config):
             bidirectional=False,
             rnn="GRU",
         )
+    else:
+        raise ValueError(f"Unknown featurizer type: {network_type}")
 
 
 def get_flow(
     featurizer,
     n_dims,
     flow_hidden,
-    num_cond_inputs,
+    num_cond_inputs=None,
     num_blocks=5,
     perm_seed=0,
     clamp_0=-1,
     clamp_1=1,
     n_mog=8,
 ):
+
+    # If a list/tuple of per-channel featurizers is provided, wrap them
+    if isinstance(featurizer, (list, tuple)):
+        featurizer = MultiFeaturizer(featurizer)
+
+    if num_cond_inputs is None:
+        if featurizer is None:
+            raise ValueError("num_cond_inputs must be provided when featurizer is None")
+        if not hasattr(featurizer, "num_outputs"):
+            raise ValueError(
+                "Could not infer num_cond_inputs: featurizer has no attribute 'num_outputs'. "
+                "Pass num_cond_inputs explicitly."
+            )
+        num_cond_inputs = int(featurizer.num_outputs)
+
     modules = []
     MADE = flows.MADE2
     num_blocks -= 1

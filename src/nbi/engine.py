@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import wandb
 from multiprocess import Pool
-from torch import optim
+from torch import nn, optim
 from torch.optim.lr_scheduler import (
     CosineAnnealingWarmRestarts,
     MultiStepLR,
@@ -21,14 +21,23 @@ from torch.optim.lr_scheduler import (
 
 # this seems to be required for some environments
 from torch.utils.data import DataLoader, dataloader
+from torch.utils.data import Dataset as TorchDataset
 from tqdm import tqdm
 from tqdm.notebook import tqdm as tqdmn
 
 dataloader.multiprocessing = mp
 
-from .data import BaseContainer
+from .data import BaseContainer, DatasetContainer
 from .model import DataParallelFlow, get_featurizer, get_flow
-from .utils import iid_gaussian, log_like_iidg, parallel_simulate
+from .empirical_prior import EmpiricalPrior
+from .utils import iid_gaussian, log_like_iidg, parallel_simulate, collate_list_channels, masked_mean_std
+
+
+def _worker_init_fn(worker_id):
+    """Prevent numpy/BLAS thread oversubscription in DataLoader workers."""
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
 
 
 class NBI:
@@ -141,17 +150,22 @@ class NBI:
         path="test",
         n_jobs=1,
         labels=None,
+        masked_channels=None,
         tqdm_notebook=False,
         network_reinit=False,
         scale_reinit=True,
     ):
         self.device = device
+        self.masked_channels = masked_channels
         self.init_env()
 
         if state_dict is not None:
-            _state_dict = torch.load(
-                state_dict, map_location=self.device, weights_only=False
-            )
+            if isinstance(state_dict, str):
+                _state_dict = torch.load(
+                    state_dict, map_location=self.device, weights_only=False
+                )
+            else:
+                _state_dict = state_dict
             flow_config_all = _state_dict["flow_config"]
             featurizer = (
                 featurizer
@@ -162,17 +176,39 @@ class NBI:
             flow_config_all = copy.copy(self.default_flow_config)
             flow_config_all.update(flow)
 
-        if type(featurizer) == dict:
+        featurizer_config = copy.deepcopy(featurizer)
+
+        if isinstance(featurizer, list):
+            built = []
+            for i, f in enumerate(featurizer):
+                if isinstance(f, dict):
+                    if "type" not in f:
+                        raise ValueError(f"Featurizer config {i} missing 'type': {f}")
+                    built.append(get_featurizer(f["type"], f))
+                elif isinstance(f, nn.Module):
+                    built.append(f)
+                else:
+                    raise TypeError(f"Featurizer {i} must be dict or nn.Module, got {type(f)}")
+            featurizer = built
+
+            # strict: no Nones
+            if any(f is None for f in featurizer):
+                bad = [i for i, f in enumerate(featurizer) if f is None]
+                raise ValueError(f"Some featurizers built to None at indices {bad}")
+
+            print("Built featurizers:", len(featurizer))
+
+        elif isinstance(featurizer, dict):
             featurizer = get_featurizer(featurizer["type"], featurizer)
             flow_config_all["num_cond_inputs"] = featurizer.num_outputs
 
         self.featurizer_config = copy.copy(featurizer)
         self.flow_config = flow_config_all
 
-        self.network = get_flow(featurizer, **flow_config_all)
-        self.network = DataParallelFlow(self.network).to(
-            self.device, dtype=torch.float32
-        )
+        self.network = get_flow(featurizer, **flow_config_all).to(self.device, dtype=torch.float32)
+
+        if "cuda" in self.device and torch.cuda.is_available() and torch.cuda.device_count() > 1:
+            self.network = DataParallelFlow(self.network)
 
         self.corner_kwargs.update({"labels": labels})
         self.network_reinit = network_reinit
@@ -256,6 +292,8 @@ class NBI:
         plot=True,
         f_accept_min=-1,
         workers=8,
+        pin_memory=None,
+        prefetch_factor=2,
     ):
         """
         Fit the Neural Bayesian Inference Engine.
@@ -342,12 +380,18 @@ class NBI:
         workers : int, optional
             Number of workers for data loading.
 
+        pin_memory : bool, optional
+            If True, enables pinned memory for data loading. Defaults to True when using CUDA, False otherwise.
+
+        prefetch_factor : int, optional
+            Number of batches prefetched per worker. Default: 2. Ignored when workers=0.
+
         Returns
         -------
 
         """
-        # either simulate n_sims or provide pre computed samples
-        assert n_sims > 0 or y is not None
+        # either simulate n_sims, provide pre computed samples, or pass a Dataset
+        assert n_sims > 0 or y is not None or isinstance(x, TorchDataset)
 
         if type(noise) == np.ndarray:
             # for i.i.d. gaussian noise
@@ -365,6 +409,8 @@ class NBI:
         self.x = x
         self.y = y
 
+        using_dataset = isinstance(x, TorchDataset) and y is None
+
         # this needs revision in another version
         self.wandb = use_wandb
         if self.wandb:
@@ -374,13 +420,20 @@ class NBI:
             min_lr = min(lr, lr / (n_sims / batch_size * n_epochs) * 10)
             print("Auto learning rate to min_lr =", min_lr)
 
+        using_dataset = isinstance(self.x, TorchDataset) and self.y is None
+
         # for restarting training
-        if len(self.x_all) == self.round:
+        if (not using_dataset) and (len(self.x_all) == self.round):
             # this is not a restart because
             # data for this round has not been generated
             self.prepare_data(x_obs, n_sims)
 
         for i in range(n_rounds):
+            path_round = os.path.join(self.directory, str(self.round))
+            try:
+                os.mkdir(path_round)
+            except:
+                pass
             print(
                 f"\n---------------------- Round: {self.round} ----------------------"
             )
@@ -388,10 +441,15 @@ class NBI:
             self._init_train(lr)
             self._init_scheduler(min_lr, decay_type=decay_type)
             x_round, y_round = self.get_round_data(n_reuse)
-            data_container = BaseContainer(
-                x_round, y_round, f_test=0, f_val=f_val, process=self.process
-            )
-            self._init_loader(data_container, batch_size, workers=workers)
+
+            if isinstance(x_round, TorchDataset) and y_round is None:
+                data_container = DatasetContainer(x_round, f_test=0.0, f_val=f_val, seed=0, process=self.process)
+            else:
+                data_container = BaseContainer(
+                    x_round, y_round, f_test=0, f_val=f_val, process=self.process
+                )
+
+            self._init_loader(data_container, batch_size, workers=workers, pin_memory=pin_memory, prefetch_factor=prefetch_factor)
 
             for epoch in range(n_epochs):
                 self.epoch = epoch
@@ -593,6 +651,10 @@ class NBI:
             Training parameters for the current round.
 
         """
+        # if user provided a torch Dataset for amortized training
+        if isinstance(self.x, TorchDataset) and self.y is None and self.round == 0:
+            return self.x, None
+
         if n_reuse == -1:
             return np.concatenate(self.x_all), np.concatenate(self.y_all)
         else:
@@ -723,56 +785,72 @@ class NBI:
 
         Parameters
         ----------
-        state_dict : str or state dict
-            State dict or path to saved state dict containing three keys:
-            network_state_dict, x_scale, y_scale
+        state_dict : str or dict
+            State dict or path to saved state dict. Supports both the current format
+            (model_state_dict, x_mean, x_std, y_mean, y_std) and legacy format (x_scale, y_scale).
 
         Returns
         -------
 
         """
-
         if type(state_dict) == str:
-            state_dict = torch.load(
-                state_dict, map_location=self.device, weights_only=False
-            )
-        model_state_dict = state_dict["model_state_dict"]
+            state_dict = torch.load(state_dict, map_location=self.device, weights_only=False)
 
-        # Move x_scale and y_scale to CPU before converting to numpy arrays
-        x_scale = state_dict["x_scale"].cpu().numpy()
-        y_scale = state_dict["y_scale"].cpu().numpy()
+        self.get_network().load_state_dict(state_dict["model_state_dict"])
 
-        self.x_mean = x_scale[0]
-        self.x_std = x_scale[1]
-        self.y_mean = y_scale[0]
-        self.y_std = y_scale[1]
-        self.get_network().load_state_dict(model_state_dict)
+        def to_numpy(obj):
+            if isinstance(obj, torch.Tensor):
+                return obj.detach().cpu().numpy()
+            if isinstance(obj, np.ndarray):
+                return obj
+            if isinstance(obj, (list, tuple)):
+                return [to_numpy(x) for x in obj]
+            if obj is None:
+                return None
+            raise TypeError(f"Unsupported scaler type: {type(obj)}")
+
+        if "x_mean" in state_dict:
+            self.x_mean = to_numpy(state_dict["x_mean"])
+            self.x_std  = to_numpy(state_dict["x_std"])
+            self.y_mean = to_numpy(state_dict["y_mean"])
+            self.y_std  = to_numpy(state_dict["y_std"])
+        else:
+            x_scale = state_dict["x_scale"].cpu().numpy()
+            y_scale = state_dict["y_scale"].cpu().numpy()
+            self.x_mean, self.x_std = x_scale[0], x_scale[1]
+            self.y_mean, self.y_std = y_scale[0], y_scale[1]
+
+        # keep masks if present
+        if "masked_channels" in state_dict:
+            self.masked_channels = state_dict["masked_channels"]
 
     def get_params(self):
         """
         Saves the network weights and pre-processing scales to disk
-
-        Returns
-        -------
-
         """
-        x_scale = np.array([self.x_mean, self.x_std], dtype=np.float32)
-        y_scale = np.array([self.y_mean, self.y_std], dtype=np.float32)
-
-        # Convert numpy arrays to PyTorch tensors
-        x_scale_tensor = torch.from_numpy(x_scale)
-        y_scale_tensor = torch.from_numpy(y_scale)
-
-        # Assuming 'network' is your model
         model_state_dict = copy.deepcopy(self.get_network().state_dict())
 
-        # Create a new dictionary to store model state and additional tensors
+        def to_tensor(obj):
+            # obj can be ndarray, torch tensor, or list/tuple of those
+            if isinstance(obj, torch.Tensor):
+                return obj.detach().cpu()
+            if isinstance(obj, np.ndarray):
+                return torch.from_numpy(obj.astype(np.float32, copy=False))
+            if isinstance(obj, (list, tuple)):
+                return [to_tensor(x) for x in obj]
+            if obj is None:
+                return None
+            raise TypeError(f"Unsupported scaler type: {type(obj)}")
+
         state_dict = {
             "model_state_dict": model_state_dict,
-            "x_scale": x_scale_tensor,
-            "y_scale": y_scale_tensor,
+            "x_mean": to_tensor(self.x_mean),
+            "x_std":  to_tensor(self.x_std),
+            "y_mean": to_tensor(self.y_mean),
+            "y_std":  to_tensor(self.y_std),
             "flow_config": self.flow_config,
             "featurizer_config": self.featurizer_config,
+            "masked_channels": self.masked_channels,
         }
         return state_dict
 
@@ -802,6 +880,7 @@ class NBI:
         -------
 
         """
+        assert self.y_mean is not None and self.y_std is not None
         if back:
             return y * self.y_std + self.y_mean
         else:
@@ -812,6 +891,10 @@ class NBI:
     def scale_x(self, x, back=False):
         """
         Scale data to zero mean and unit variance, and vice versa.
+
+        Supports:
+        - x as Tensor/ndarray  [B, C, L] or [C, L]
+        - x as list/tuple of Tensors/arrays, each [B, C, L] or [C, L]
 
         Parameters
         ----------
@@ -824,6 +907,29 @@ class NBI:
         -------
 
         """
+        assert self.x_mean is not None and self.x_std is not None
+
+        # Multi-channel list case
+        if isinstance(x, (list, tuple)):
+            assert isinstance(self.x_mean, list) and isinstance(self.x_std, list)
+            assert len(x) == len(self.x_mean) == len(self.x_std)
+
+            xs = []
+            for j, xj in enumerate(x):
+                mu = self.x_mean[j]
+                sd = self.x_std[j]
+
+                # If xj is torch Tensor, keep it torch
+                if torch.is_tensor(xj):
+                    mu_t = torch.as_tensor(mu, device=xj.device, dtype=xj.dtype)
+                    sd_t = torch.as_tensor(sd, device=xj.device, dtype=xj.dtype)
+                    xs.append(xj * sd_t + mu_t if back else (xj - mu_t) / sd_t)
+                else:
+                    xs.append(xj * sd + mu if back else (xj - mu) / sd)
+
+            return xs
+
+        # Single tensor/array case (original behavior)
         if back:
             return x * self.x_std + self.x_mean
         else:
@@ -898,6 +1004,7 @@ class NBI:
         x_path, good = self.simulate(ys)
         x_path = x_path[good]
         ys = ys[good]
+        print(ys)
         weights = self.importance_reweight(x, x_path, ys)
 
         neff = 1 / (weights**2).sum() - 1
@@ -956,7 +1063,18 @@ class NBI:
         """
         self.network.eval()
         x = self.scale_x(x)
-        x = torch.from_numpy(x).to(self.device, dtype=torch.float32)
+
+        if isinstance(x, (list, tuple)):
+            x = [
+                (xj if torch.is_tensor(xj) else torch.as_tensor(xj))
+                .to(self.device, dtype=torch.float32)
+                for xj in x
+            ]
+        else:
+            if not torch.is_tensor(x):
+                x = torch.as_tensor(x)
+            x = x.to(self.device, dtype=torch.float32)
+
         with torch.no_grad():
             # GPU memory control (make larger?)
             if n > 20000:
@@ -998,6 +1116,7 @@ class NBI:
             return self.x, masks
         else:
             n = len(thetas)
+            print(thetas)
             paths = np.array(
                 [os.path.join(path_round, str(i) + ".npy") for i in range(n)]
             )
@@ -1022,6 +1141,48 @@ class NBI:
             masks = np.concatenate(masks)
             return paths, masks
 
+        
+    def _check_scalers(self):
+        if self.x_mean is None or self.x_std is None:
+            raise ValueError("x_mean/x_std are None; did _init_scales run?")
+
+        # Multi-channel case: list of [1, C, 1] arrays
+        if isinstance(self.x_mean, list):
+            if not isinstance(self.x_std, list):
+                raise ValueError("x_mean is a list but x_std is not.")
+            if len(self.x_mean) != len(self.x_std):
+                raise ValueError("x_mean/x_std length mismatch.")
+
+            for j, (mu, sd) in enumerate(zip(self.x_mean, self.x_std)):
+                mu = np.asarray(mu)
+                sd = np.asarray(sd)
+
+                if (~np.isfinite(mu)).any():
+                    bad = np.where(~np.isfinite(mu))
+                    raise ValueError(f"Non-finite x_mean in channel {j} at {bad}")
+
+                if (~np.isfinite(sd)).any():
+                    bad = np.where(~np.isfinite(sd))
+                    raise ValueError(f"Non-finite x_std in channel {j} at {bad}")
+
+                if (sd == 0).any():
+                    bad = np.where(sd == 0)
+                    raise ValueError(f"Zero x_std in channel {j} at {bad}")
+
+            return  # all good
+
+        # Single-tensor case (original behavior)
+        bad_mean = (~np.isfinite(self.x_mean)).any()
+        bad_std  = (~np.isfinite(self.x_std)).any()
+        if bad_mean or bad_std:
+            print("x_mean bad cols:", np.where(~np.isfinite(self.x_mean))[0].tolist())
+            print("x_std  bad cols:", np.where(~np.isfinite(self.x_std))[0].tolist())
+            raise ValueError("Non-finite x_mean/x_std; recompute scalers before training.")
+        if (self.x_std == 0).any():
+            zeros = np.where(self.x_std == 0)[0].tolist()
+            print("x_std zero cols:", zeros)
+            raise ValueError("Zero x_std; recompute scalers before training.") 
+
     def _train_step(self):
         """
         Single training step.
@@ -1030,16 +1191,57 @@ class NBI:
         -------
 
         """
+        self._check_scalers()
         np.random.seed(self.epoch)
         self.network.train()
         train_loss = []
         with self.tqdm(total=len(self.train_loader.dataset)) as pbar:
             for batch_idx, data in enumerate(self.train_loader):
                 x, y = data
-                x = self.scale_x(x).to(self.device, dtype=torch.float32)
+
+                # Raw x finite check (supports list)
+                if isinstance(x, (list, tuple)):
+                    for j, xj in enumerate(x):
+                        if not torch.isfinite(xj).all():
+                            raise ValueError(f"NaN/Inf in raw x channel {j} @batch {batch_idx}")
+                else:
+                    if not torch.isfinite(x).all():
+                        raise ValueError(f"NaN/Inf in raw x @batch {batch_idx}")
+                if not torch.isfinite(y).all(): 
+                    raise ValueError(f"NaN/Inf in raw y @batch {batch_idx}")
+                
+                # scale + move x (supports list-of-tensors)
+                x = self.scale_x(x)
+                if isinstance(x, (list, tuple)):
+                    x = [xj.to(self.device, dtype=torch.float32) for xj in x]
+                else:
+                    x = x.to(self.device, dtype=torch.float32)
+
+                # scale + move y
                 y = self.scale_y(y).to(self.device, dtype=torch.float32)
+                
+                if isinstance(x, (list, tuple)):
+                    for j, xj in enumerate(x):
+                        if not torch.isfinite(xj).all():
+                            raise ValueError(f"Scaling produced NaN/Inf in x channel {j} @batch {batch_idx}")
+                else:
+                    if not torch.isfinite(x).all():
+                        bad_dims = (~torch.isfinite(x)).any(dim=0).nonzero(as_tuple=True)[0]
+                        raise ValueError(f"Scaling produced NaN/Inf in x @ dims {bad_dims.tolist()}")
+                if not torch.isfinite(y).all():
+                    bad_dims = (~torch.isfinite(y)).any(dim=0).nonzero(as_tuple=True)[0]
+                    raise ValueError(f"Scaling produced NaN/Inf in y @ dims {bad_dims.tolist()}")
+
                 self.optimizer.zero_grad()
                 loss = self.network(x, y)
+
+                if not torch.isfinite(loss).all():
+                    with torch.no_grad():
+                        print("Loss contains non-finite values. Sample stats:",
+                            "x mean/std", x.mean().item(), x.std().item(),
+                            "y mean/std", y.mean().item(), y.std().item())
+                    raise ValueError(f"Non-finite loss @batch {batch_idx}")
+    
                 loss = loss.mean()
                 train_loss.append(loss.item())
                 loss.backward()
@@ -1051,7 +1253,12 @@ class NBI:
                     )
                 self.optimizer.step()
 
-                pbar.update(x.shape[0])
+                # x can be a list of channel tensors
+                if isinstance(x, (list, tuple)):
+                    bs = x[0].shape[0]
+                else:
+                    bs = x.shape[0]
+                pbar.update(bs)
                 pbar.set_description(
                     "Epoch {:d}: Train, Loglike in nats: {:.6f}".format(
                         self.epoch, -np.mean(train_loss)
@@ -1078,14 +1285,23 @@ class NBI:
             objs = 0
             for batch_idx, data in enumerate(self.valid_loader):
                 x, y = data
-                x = self.scale_x(x).to(self.device, dtype=torch.float32)
+                x = self.scale_x(x)
+                if isinstance(x, (list, tuple)):
+                    x = [xj.to(self.device, dtype=torch.float32) for xj in x]
+                else:
+                    x = x.to(self.device, dtype=torch.float32)
+
                 y = self.scale_y(y).to(self.device, dtype=torch.float32)
-                objs += x.shape[0]
+                if isinstance(x, (list, tuple)):
+                    bs = x[0].shape[0]
+                else:
+                    bs = x.shape[0]
+                objs += bs
                 self.optimizer.zero_grad()
                 with torch.no_grad():
                     loss = self.network(x, y).mean()
                     val_loss.append(loss.detach().cpu().numpy())
-                pbar.update(x.shape[0])
+                pbar.update(bs)
                 pbar.set_description(
                     f"- Val, Loglike in nats: {-np.sum(val_loss) / (batch_idx + 1):.6f}"
                 )
@@ -1190,18 +1406,22 @@ class NBI:
         else:
             self.scheduler.step()
 
-    def _init_loader(self, data_container, batch_size, workers=4):
+    def _init_loader(self, data_container, batch_size, workers=4, pin_memory=None, prefetch_factor=2):
         """
         Initialize data loader.
 
         Parameters
         ----------
-        data_container : DataContainer
+        data_container : BaseContainer or DatasetContainer
             Data container object.
         batch_size : int
             Batch size.
         workers : int, optional
             Number of workers for data loader.
+        pin_memory : bool, optional
+            If True, enables pinned memory for data loading. Defaults to True when using CUDA, False otherwise.
+        prefetch_factor : int, optional
+            Number of batches prefetched per worker. Default: 2. Ignored when workers=0.
 
         Returns
         -------
@@ -1209,16 +1429,39 @@ class NBI:
         """
         train_container, val_container, test_container = data_container.get_splits()
 
+        if pin_memory is None:
+            pin_memory = ("cuda" in str(self.device))
+
         kwargs = {
             "num_workers": workers,
-            "pin_memory": False,
+            "pin_memory": pin_memory,
             "drop_last": True,
             "persistent_workers": True,
+            "prefetch_factor": prefetch_factor if workers > 0 else None,
+            "collate_fn": collate_list_channels,
+            "worker_init_fn": _worker_init_fn,
         }
+        if workers == 0:
+            kwargs.pop("prefetch_factor", None)
+            kwargs["persistent_workers"] = False
 
-        self.train_loader = DataLoader(
-            train_container, batch_size=batch_size, shuffle=True, **kwargs
-        )
+        # Use ShardGroupedSampler when the underlying dataset supports it,
+        # to minimise shard-switch overhead with mmap-backed .npy shards.
+        train_sampler = None
+        try:
+            from ebsbi.shards import ShardGroupedSampler
+            train_sampler = ShardGroupedSampler(train_container)
+        except (ImportError, TypeError):
+            pass
+
+        if train_sampler is not None:
+            self.train_loader = DataLoader(
+                train_container, batch_size=batch_size, sampler=train_sampler, **kwargs
+            )
+        else:
+            self.train_loader = DataLoader(
+                train_container, batch_size=batch_size, shuffle=True, **kwargs
+            )
         self.valid_loader = DataLoader(val_container, batch_size=batch_size, **kwargs)
 
         # if self.network_reinit or self.round == 0:
@@ -1246,9 +1489,12 @@ class NBI:
                 return self.y
             else:
                 params = []
-                for prior in self.prior:
-                    params.append(prior.rvs(n))
-                params = np.array(params).T
+                if isinstance(self.prior, EmpiricalPrior):
+                    params = self.prior.rvs(n)
+                else:
+                    for prior in self.prior:
+                        params.append(prior.rvs(n))
+                    params = np.array(params).T
                 return params
         # 2+ round: sample from surrogate posterior
         else:
@@ -1256,7 +1502,9 @@ class NBI:
             logprior = self.log_prior(params)
             if np.isinf(logprior).any():
                 print("Samples outside prior N =", np.isinf(logprior).sum())
+                print('Bad: ', params[np.isinf(logprior)])
                 params = params[~np.isinf(logprior)]
+                print('Good: ', params)
                 while len(params) < n:
                     n_needed = n - len(params)
                     new_params = self.sample(x, n=n)
@@ -1268,28 +1516,78 @@ class NBI:
 
     def _init_scales(self):
         """
-            Calculate data pre-processing scales from the current round training data.
-
-        Returns
-        -------
-
+        Calculate data pre-processing scales from the current round training data.
+        Supports x being either:
+        - a Tensor [B, C, L]
+        - a list of Tensors, each [B, C, L] (multi-featurizer / multi-channel)
         """
-        x_list = []
+        x_batches = []
         y_list = []
         n = 0
+
         for batch_idx, data in enumerate(self.train_loader):
             x, y = data
-            x_list.append(x.cpu().numpy())
             y_list.append(y.cpu().numpy())
-            n += x_list[-1].shape[0]
+            x_batches.append(x)
+            n += y.shape[0]
             if n > 5000:
                 break
-        x_list = np.concatenate(x_list, axis=0)
-        y_list = np.concatenate(y_list, axis=0)
-        self.x_mean = x_list.mean(-1, keepdims=True).mean(0, keepdims=True)
-        self.x_std = x_list.std(-1, keepdims=True).mean(0, keepdims=True)
-        self.y_mean = y_list.mean(0, keepdims=True)
-        self.y_std = y_list.std(0, keepdims=True)
+
+        # y scales (same as before)
+        y_arr = np.concatenate(y_list, axis=0)
+        self.y_mean = y_arr.mean(0, keepdims=True)
+        self.y_std  = y_arr.std(0, keepdims=True)
+
+        # x scales
+        x0 = x_batches[0]
+
+        # Case 1: multi-channel list/tuple of tensors
+        if isinstance(x0, (list, tuple)):
+            x_mean = []
+            x_std = []
+            n_chan = len(x0)
+
+            for j in range(n_chan):
+                # concatenate batches along batch dim: [N, C, L]
+                xs = torch.cat([xb[j] for xb in x_batches], dim=0).cpu().numpy()
+
+                cfg = self.masked_channels[j] if self.masked_channels is not None else None
+                reduce_axes = (0, 2)
+                if cfg is not None and "reduce_axes" in cfg:
+                    reduce_axes = tuple(cfg["reduce_axes"])
+
+                if cfg is not None:
+                    mu, sd = masked_mean_std(
+                        xs,
+                        mask_dim=cfg["mask_dim"],
+                        masked_dims=cfg["masked_dims"],
+                        reduce_axes=reduce_axes
+                    )
+
+                    if cfg.get("mask_keep_identity", True):
+                        md = cfg["mask_dim"]
+                        mu[0, md, :] = 0.0
+                        sd[0, md, :] = 1.0
+
+                else:
+                    # default unmasked behavior
+                    mu = xs.mean(axis=reduce_axes, keepdims=True)
+                    sd = xs.std(axis=reduce_axes, keepdims=True)
+                    sd = np.where(sd == 0, 1.0, sd)
+
+                x_mean.append(mu.astype(np.float32))
+                x_std.append(sd.astype(np.float32))
+
+            self.x_mean = x_mean
+            self.x_std = x_std
+
+        # Case 2: single tensor [B, C, L]
+        else:
+            x_arr = torch.cat([xb for xb in x_batches], dim=0).cpu().numpy()
+            self.x_mean = x_arr.mean(-1, keepdims=True).mean(0, keepdims=True)
+            self.x_std  = x_arr.std(-1, keepdims=True).mean(0, keepdims=True)
+            self.x_std  = np.where(self.x_std == 0, 1.0, self.x_std).astype(np.float32)
+            self.x_mean = self.x_mean.astype(np.float32)
 
     def log_prior(self, y):
         """
@@ -1308,6 +1606,8 @@ class NBI:
         """
         if self.prior is None:
             return np.zeros(len(y))
+        elif isinstance(self.prior, EmpiricalPrior):
+            log_prob = self.prior.logpdf(y)
         else:
             log_prob = np.zeros(len(y))
             for i, prior in enumerate(self.prior):
@@ -1364,8 +1664,8 @@ class NBI:
         x = torch.from_numpy(x).to(self.device, dtype=torch.float32)
         y = torch.from_numpy(y).to(self.device, dtype=torch.float32)
         with torch.no_grad():
-            # it appears that DataParallal doesn't work properly here
-            log_prob = self.network.module(x, y).cpu().numpy()[:, 0] * -1
+            # use get_network() to handle both DataParallel and non-wrapped cases
+            log_prob = self.get_network()(x, y).cpu().numpy()[:, 0] * -1
         return log_prob
 
     def corner(
